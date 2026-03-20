@@ -40,8 +40,15 @@ import {
   updateDoc, 
   onSnapshot, 
   increment,
-  getDocFromServer
+  getDocFromServer,
+  arrayUnion
 } from 'firebase/firestore';
+
+const VIDEOS = [
+  { id: "vid_001", title: "The Neon Vibe", embedUrl: "https://www.youtube.com/embed/jNQXAC9IVRw?autoplay=0&controls=1&rel=0", secretColor: "Neon Green" },
+  { id: "vid_002", title: "Cyberpunk City", embedUrl: "https://www.youtube.com/embed/8X2kIfS6fb8?autoplay=0&controls=1&rel=0", secretColor: "Blue Water" },
+  { id: "vid_003", title: "Retro Future", embedUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=0&controls=1&rel=0", secretColor: "Red Fire" }
+];
 
 // --- Error Handling ---
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
@@ -121,6 +128,7 @@ const INITIAL_USER_DATA: UserData = {
   wallet: 0,
   verifiedWatchTime: 0,
   referrals: 0,
+  claimedVideos: [],
 };
 
 const INITIAL_HISTORY: Transaction[] = [
@@ -199,8 +207,30 @@ function ViewVibeApp() {
   const [history, setHistory] = useState<Transaction[]>(INITIAL_HISTORY);
   const [activeTab, setActiveTab] = useState<ActiveTab>('dailyDrop');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail'>('idle');
+  const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail' | 'claimed'>('idle');
   const [leaderboardType, setLeaderboardType] = useState<'watchers' | 'promoters'>('watchers');
+  const [watchTimer, setWatchTimer] = useState(0);
+  const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
+  const isProcessingRef = React.useRef(false);
+
+  const currentVideo = VIDEOS[currentVideoIndex];
+
+  // --- Watch Timer ---
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setWatchTimer(prev => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Set verification state to 'claimed' if user already claimed this video
+  useEffect(() => {
+    if (user.claimedVideos?.includes(currentVideo.id)) {
+      setVerificationState('claimed');
+    } else {
+      setVerificationState('idle');
+    }
+  }, [user.claimedVideos, currentVideoIndex]);
 
   // --- Auth & Firestore Sync ---
   useEffect(() => {
@@ -219,6 +249,7 @@ function ViewVibeApp() {
               wallet: 0,
               verifiedWatchTime: 0,
               referrals: 0,
+              claimedVideos: [],
             };
             await setDoc(userDocRef, newUserData);
           }
@@ -280,34 +311,48 @@ function ViewVibeApp() {
   };
 
   const handleVerify = async (color: string) => {
-    if (!currentUser) return;
+    if (!currentUser || isProcessingRef.current) return;
     if (verificationState !== 'idle') return;
+    
+    isProcessingRef.current = true;
 
-    if (color === 'Neon Green') {
+    // Check if already claimed
+    if (user.claimedVideos?.includes(currentVideo.id)) {
+      setVerificationState('claimed');
+      isProcessingRef.current = false;
+      return;
+    }
+
+    if (color === currentVideo.secretColor) {
       setVerificationState('success');
       const newAmount = 50;
-      const newWatchTime = 12;
+      // Convert seconds to minutes (at least 1 minute if watched any time)
+      const newWatchTime = Math.max(1, Math.floor(watchTimer / 60));
       
       const userDocRef = doc(db, 'users', currentUser.uid);
       try {
         await updateDoc(userDocRef, {
           wallet: increment(newAmount),
-          verifiedWatchTime: increment(newWatchTime)
+          verifiedWatchTime: increment(newWatchTime),
+          claimedVideos: arrayUnion(currentVideo.id)
         });
 
         const newTx: Transaction = {
           id: Date.now().toString(),
           type: 'earn',
           amount: newAmount,
-          note: 'Daily Drop Verification',
+          note: `Video Reward: ${currentVideo.id}`,
           date: new Date().toISOString().split('T')[0]
         };
         setHistory(prev => [newTx, ...prev]);
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
+      } finally {
+        isProcessingRef.current = false;
       }
     } else {
       setVerificationState('fail');
+      isProcessingRef.current = false;
     }
   };
 
@@ -399,24 +444,46 @@ function ViewVibeApp() {
 
             <div className="p-6">
               {currentUser ? (
-                <div className="glass-card p-4 bg-gradient-to-br from-white/10 to-transparent border-white/20 relative overflow-hidden group">
-                  <div className="absolute top-0 right-0 w-24 h-24 bg-orange-500/10 rounded-full blur-2xl -mr-8 -mt-8 group-hover:bg-orange-500/20 transition-all duration-500" />
-                  <div className="flex justify-between items-start mb-1">
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Balance</p>
-                    <button onClick={handleSignOut} className="text-slate-500 hover:text-white transition-colors">
+                <div className="glass-card p-5 bg-gradient-to-br from-white/10 via-white/5 to-transparent border-white/20 relative overflow-hidden group cursor-default">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/20 rounded-full blur-3xl -mr-12 -mt-12 group-hover:bg-orange-500/30 transition-all duration-700" />
+                  <div className="absolute bottom-0 left-0 w-24 h-24 bg-purple-500/10 rounded-full blur-3xl -ml-8 -mb-8 group-hover:bg-purple-500/20 transition-all duration-700" />
+                  
+                  <div className="flex justify-between items-start mb-2 relative z-10">
+                    <div>
+                      <p className="text-[10px] font-black text-orange-500 uppercase tracking-[0.2em] mb-0.5">Verified Account</p>
+                      <p className="text-sm font-bold text-white truncate max-w-[140px]">{user.displayName}</p>
+                    </div>
+                    <button 
+                      onClick={handleSignOut} 
+                      className="p-1.5 rounded-lg bg-white/5 text-slate-400 hover:text-white hover:bg-white/10 transition-all border border-white/5"
+                      title="Sign Out"
+                    >
                       <LogOut size={14} />
                     </button>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl font-black text-white neon-glow-orange">{user.wallet.toLocaleString()}</span>
-                    <span className="text-xs font-bold text-orange-500">PTS</span>
-                  </div>
-                  <div className="mt-3 h-1 w-full bg-white/10 rounded-full overflow-hidden">
-                    <motion.div 
-                      initial={{ width: 0 }}
-                      animate={{ width: '65%' }}
-                      className="h-full bg-gradient-to-r from-orange-500 to-purple-500"
-                    />
+
+                  <div className="mt-4 relative z-10">
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-3xl font-black text-white tracking-tighter neon-glow-orange">
+                        {user.wallet.toLocaleString()}
+                      </span>
+                      <span className="text-[10px] font-black text-orange-500 uppercase tracking-widest">Points</span>
+                    </div>
+                    
+                    <div className="mt-4 space-y-2">
+                      <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                        <span>Daily Goal</span>
+                        <span>65%</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden border border-white/5">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: '65%' }}
+                          transition={{ duration: 1, ease: "easeOut" }}
+                          className="h-full bg-gradient-to-r from-orange-500 via-orange-400 to-purple-500 shadow-[0_0_10px_rgba(249,115,22,0.5)]"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -449,8 +516,9 @@ function ViewVibeApp() {
                 <div className="flex-[1.5] space-y-6">
                   <div className="glass-card p-2 aspect-video relative group overflow-hidden">
                     <iframe
+                      key={currentVideo.id}
                       className="w-full h-full rounded-xl"
-                      src="https://www.youtube.com/embed/jNQXAC9IVRw?autoplay=0&controls=1&rel=0"
+                      src={currentVideo.embedUrl}
                       title="YouTube video player"
                       frameBorder="0"
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -459,11 +527,29 @@ function ViewVibeApp() {
                   </div>
                   
                   <div className="glass-card p-6">
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="p-2 bg-orange-500/20 rounded-lg text-orange-500">
-                        <Play size={24} />
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-orange-500/20 rounded-lg text-orange-500">
+                          <Play size={24} />
+                        </div>
+                        <h2 className="text-2xl font-black uppercase tracking-tight">{currentVideo.title}</h2>
                       </div>
-                      <h2 className="text-2xl font-black uppercase tracking-tight">Today's Mission</h2>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => setCurrentVideoIndex(prev => Math.max(0, prev - 1))}
+                          disabled={currentVideoIndex === 0}
+                          className="p-2 glass-card hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <ChevronRight size={20} className="rotate-180" />
+                        </button>
+                        <button 
+                          onClick={() => setCurrentVideoIndex(prev => Math.min(VIDEOS.length - 1, prev + 1))}
+                          disabled={currentVideoIndex === VIDEOS.length - 1}
+                          className="p-2 glass-card hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <ChevronRight size={20} />
+                        </button>
+                      </div>
                     </div>
                     <p className="text-slate-400 leading-relaxed mb-6">
                       Watch the clip carefully. Find the secret color flashing on the screen to verify your view. 
@@ -504,10 +590,12 @@ function ViewVibeApp() {
                     <h3 className="text-xl font-black uppercase tracking-widest mb-2">Verification</h3>
                     <p className={`text-sm font-bold uppercase tracking-widest mb-8 ${
                       verificationState === 'idle' ? 'text-slate-500' : 
-                      verificationState === 'success' ? 'text-emerald-500' : 'text-rose-500'
+                      verificationState === 'success' ? 'text-emerald-500' : 
+                      verificationState === 'claimed' ? 'text-amber-500' : 'text-rose-500'
                     }`}>
                       {verificationState === 'idle' && 'Select the Hidden Color'}
                       {verificationState === 'success' && 'Verification Successful!'}
+                      {verificationState === 'claimed' && 'Reward Already Claimed'}
                       {verificationState === 'fail' && 'Incorrect Selection!'}
                     </p>
 
@@ -520,12 +608,12 @@ function ViewVibeApp() {
                       ].map((btn) => (
                         <motion.button
                           key={btn.name}
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
+                          whileHover={{ scale: verificationState === 'idle' ? 1.05 : 1 }}
+                          whileTap={{ scale: verificationState === 'idle' ? 0.95 : 1 }}
                           disabled={verificationState !== 'idle'}
                           onClick={() => handleVerify(btn.name)}
                           className={`glass-card p-6 flex flex-col items-center gap-4 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${btn.shadow} ${
-                            verificationState === 'success' && btn.name === 'Neon Green' ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
+                            (verificationState === 'success' || verificationState === 'claimed') && btn.name === 'Neon Green' ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
                           }`}
                         >
                           <div className={`w-10 h-10 rounded-full ${btn.color} shadow-lg shadow-black/50`} />
@@ -533,6 +621,17 @@ function ViewVibeApp() {
                         </motion.button>
                       ))}
                     </div>
+
+                    {verificationState === 'claimed' && (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="mt-8 p-4 glass-card border-amber-500/30 bg-amber-500/10 flex items-center justify-center gap-3"
+                      >
+                        <AlertTriangle className="text-amber-500" />
+                        <span className="font-bold text-amber-400 uppercase tracking-widest text-xs">Reward Already Claimed</span>
+                      </motion.div>
+                    )}
 
                     {verificationState === 'success' && (
                       <motion.div 
@@ -565,7 +664,7 @@ function ViewVibeApp() {
                         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Watch Time</p>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-2xl font-black">1/1</p>
+                        <p className="text-2xl font-black">{user.claimedVideos.length}/{VIDEOS.length}</p>
                         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Drops Claimed</p>
                       </div>
                     </div>

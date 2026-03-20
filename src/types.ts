@@ -4,6 +4,7 @@ export interface UserData {
   wallet: number;
   verifiedWatchTime: number;
   referrals: number;
+  claimedVideos: string[];
 }
 
 export interface Transaction {

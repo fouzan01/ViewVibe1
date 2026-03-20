@@ -13,6 +13,7 @@ service cloud.firestore {
     //   - wallet: number (required, non-negative)
     //   - verifiedWatchTime: number (required, non-negative)
     //   - referrals: number (required, non-negative)
+    //   - claimedVideos: list (required, strings)
     //
     // ===============================================================
 
@@ -32,13 +33,14 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return data.keys().hasAll(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals']) &&
-             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals']) &&
+      return data.keys().hasAll(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos']) &&
+             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos']) &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
              isValidEmail(data.email) &&
              data.wallet is number && data.wallet >= 0 &&
              data.verifiedWatchTime is number && data.verifiedWatchTime >= 0 &&
-             data.referrals is number && data.referrals >= 0;
+             data.referrals is number && data.referrals >= 0 &&
+             data.claimedVideos is list;
     }
 
     match /users/{userId} {
