@@ -636,6 +636,14 @@ function ViewVibeApp() {
                 active={activeTab === 'referrals'} 
                 onClick={() => { setActiveTab('referrals'); setIsMobileMenuOpen(false); }} 
               />
+              {currentUser?.email === ADMIN_EMAIL && (
+                <SidebarLink 
+                  icon={Lock} 
+                  label="Admin Panel" 
+                  active={activeTab === 'admin'} 
+                  onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} 
+                />
+              )}
             </nav>
 
             <div className="p-6">
@@ -646,7 +654,12 @@ function ViewVibeApp() {
                   
                   <div className="flex justify-between items-start mb-2 relative z-10">
                     <div>
-                      <p className="text-[10px] font-black text-orange-500 uppercase tracking-[0.2em] mb-0.5">Verified Account</p>
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <p className="text-[10px] font-black text-orange-500 uppercase tracking-[0.2em]">Verified Account</p>
+                        {currentUser?.email === ADMIN_EMAIL && (
+                          <span className="px-1.5 py-0.5 bg-orange-500 text-[8px] font-black text-white rounded-sm uppercase tracking-tighter">Admin</span>
+                        )}
+                      </div>
                       <p className="text-sm font-bold text-white truncate max-w-[140px]">{user.displayName}</p>
                     </div>
                     <button 
@@ -736,6 +749,14 @@ function ViewVibeApp() {
                         </div>
                         <h2 className="text-2xl font-black uppercase tracking-tight">Today's Mission</h2>
                       </div>
+                      {currentUser?.email === ADMIN_EMAIL && (
+                        <button 
+                          onClick={() => setActiveTab('admin')}
+                          className="px-4 py-2 glass-card border-orange-500/30 text-orange-500 text-[10px] font-black uppercase tracking-widest hover:bg-orange-500/10 transition-colors"
+                        >
+                          Manage Drop
+                        </button>
+                      )}
                     </div>
                     <p className="text-slate-400 leading-relaxed mb-6">
                       Watch the clip carefully. Find the secret color flashing on the screen to verify your view. 
