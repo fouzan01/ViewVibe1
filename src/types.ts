@@ -15,7 +15,12 @@ export interface Transaction {
   date: string;
 }
 
-export type ActiveTab = 'dailyDrop' | 'leaderboard' | 'wallet' | 'referrals';
+export type ActiveTab = 'dailyDrop' | 'leaderboard' | 'wallet' | 'referrals' | 'admin';
+
+export interface Settings {
+  youtubeVideoId: string;
+  correctColor: string;
+}
 
 export interface LeaderboardUser {
   rank: number;

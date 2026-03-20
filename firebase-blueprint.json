@@ -13,12 +13,26 @@
         "claimedVideos": { "type": "array", "items": { "type": "string" }, "description": "List of video IDs for which rewards have been claimed" }
       },
       "required": ["displayName", "email", "wallet", "verifiedWatchTime", "referrals", "claimedVideos"]
+    },
+    "Settings": {
+      "title": "Global Settings",
+      "description": "Stores global app configuration like the current video drop.",
+      "type": "object",
+      "properties": {
+        "youtubeVideoId": { "type": "string", "description": "The ID of the current YouTube video" },
+        "correctColor": { "type": "string", "description": "The correct color for verification" }
+      },
+      "required": ["youtubeVideoId", "correctColor"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "User profile document indexed by Firebase Auth UID."
+    },
+    "/settings/currentDrop": {
+      "schema": "Settings",
+      "description": "The current daily drop configuration."
     }
   }
 }

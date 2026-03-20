@@ -22,10 +22,12 @@ import {
   X,
   LogIn,
   LogOut,
-  Lock
+  Lock,
+  RefreshCw,
+  Save
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo } from './types';
+import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings } from './types';
 import { auth, db, googleProvider } from './firebase';
 import { 
   signInWithPopup, 
@@ -44,10 +46,13 @@ import {
   arrayUnion
 } from 'firebase/firestore';
 
-const VIDEOS = [
-  { id: "vid_001", title: "The Neon Vibe", embedUrl: "https://www.youtube.com/embed/jNQXAC9IVRw?autoplay=0&controls=1&rel=0", secretColor: "Neon Green" },
-  { id: "vid_002", title: "Cyberpunk City", embedUrl: "https://www.youtube.com/embed/8X2kIfS6fb8?autoplay=0&controls=1&rel=0", secretColor: "Blue Water" },
-  { id: "vid_003", title: "Retro Future", embedUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=0&controls=1&rel=0", secretColor: "Red Fire" }
+const ADMIN_EMAIL = "fouzan1605@gmail.com";
+
+const COLORS = [
+  { name: 'Red Fire', color: 'bg-rose-500', shadow: 'hover:shadow-rose-500/40 hover:border-rose-500/50' },
+  { name: 'Blue Water', color: 'bg-blue-500', shadow: 'hover:shadow-blue-500/40 hover:border-blue-500/50' },
+  { name: 'Neon Green', color: 'bg-emerald-500', shadow: 'hover:shadow-emerald-500/40 hover:border-emerald-500/50' },
+  { name: 'Yellow Thunder', color: 'bg-yellow-500', shadow: 'hover:shadow-yellow-500/40 hover:border-yellow-500/50' }
 ];
 
 // --- Error Handling ---
@@ -160,6 +165,170 @@ const REWARDS: RewardItem[] = [
   { id: 'r4', name: 'Custom Profile Badge', cost: 1500, description: 'Stand out in the community with a unique badge.' },
 ];
 
+// --- Admin Dashboard ---
+
+const AdminDashboard = ({ 
+  currentUser, 
+  currentSettings, 
+  onUpdate 
+}: { 
+  currentUser: FirebaseUser | null, 
+  currentSettings: Settings | null,
+  onUpdate: (s: Settings) => void
+}) => {
+  const [videoId, setVideoId] = useState(currentSettings?.youtubeVideoId || '');
+  const [color, setColor] = useState(currentSettings?.correctColor || 'Neon Green');
+  const [isSaving, setIsSaving] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
+  const isAdmin = currentUser?.email === ADMIN_EMAIL;
+
+  useEffect(() => {
+    if (currentSettings) {
+      setVideoId(currentSettings.youtubeVideoId);
+      setColor(currentSettings.correctColor);
+    }
+  }, [currentSettings]);
+
+  const handlePublish = async () => {
+    if (!isAdmin || isSaving) return;
+    setIsSaving(true);
+    setStatus('idle');
+
+    try {
+      const settingsDocRef = doc(db, 'settings', 'currentDrop');
+      const newSettings: Settings = {
+        youtubeVideoId: videoId,
+        correctColor: color
+      };
+      await setDoc(settingsDocRef, newSettings);
+      onUpdate(newSettings);
+      setStatus('success');
+      setTimeout(() => setStatus('idle'), 3000);
+    } catch (error) {
+      console.error("Failed to update settings:", error);
+      setStatus('error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (!isAdmin) {
+    return (
+      <motion.div 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="max-w-md mx-auto mt-20 text-center"
+      >
+        <div className="p-6 glass-card border-rose-500/30 bg-rose-500/5">
+          <AlertTriangle className="text-rose-500 mx-auto mb-4" size={48} />
+          <h2 className="text-2xl font-black uppercase tracking-tight mb-2">Access Denied</h2>
+          <p className="text-slate-400">This area is restricted to administrators only.</p>
+        </div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="max-w-2xl mx-auto"
+    >
+      <div className="flex items-center gap-4 mb-10">
+        <div className="p-3 bg-orange-500/20 rounded-2xl text-orange-500">
+          <Lock size={32} />
+        </div>
+        <div>
+          <h2 className="text-4xl font-black uppercase tracking-tighter">Admin Control</h2>
+          <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Mission Management System</p>
+        </div>
+      </div>
+
+      <div className="glass-card p-8 space-y-8">
+        <div className="space-y-4">
+          <label className="text-xs font-black uppercase tracking-widest text-slate-500">YouTube Video ID</label>
+          <div className="relative">
+            <input 
+              type="text"
+              value={videoId}
+              onChange={(e) => setVideoId(e.target.value)}
+              placeholder="e.g. jNQXAC9IVRw"
+              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 text-white font-mono focus:border-orange-500 outline-none transition-colors"
+            />
+            <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600">
+              <Play size={18} />
+            </div>
+          </div>
+          <p className="text-[10px] text-slate-500 italic">Paste the ID from the YouTube URL (e.g. watch?v=ID_HERE)</p>
+        </div>
+
+        <div className="space-y-4">
+          <label className="text-xs font-black uppercase tracking-widest text-slate-500">Correct Verification Color</label>
+          <div className="grid grid-cols-2 gap-4">
+            {COLORS.map((c) => (
+              <button
+                key={c.name}
+                onClick={() => setColor(c.name)}
+                className={`p-4 glass-card flex items-center gap-3 transition-all ${
+                  color === c.name ? 'border-orange-500 bg-orange-500/10' : 'hover:bg-white/5'
+                }`}
+              >
+                <div className={`w-4 h-4 rounded-full ${c.color}`} />
+                <span className="text-xs font-bold uppercase tracking-tight">{c.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="pt-4">
+          <button
+            onClick={handlePublish}
+            disabled={isSaving}
+            className={`w-full py-5 rounded-2xl font-black uppercase tracking-[0.2em] text-sm flex items-center justify-center gap-3 transition-all ${
+              status === 'success' 
+                ? 'bg-emerald-500 text-white' 
+                : status === 'error'
+                ? 'bg-rose-500 text-white'
+                : 'bg-orange-500 hover:bg-orange-600 text-white hover:scale-[1.02] shadow-xl shadow-orange-500/20'
+            }`}
+          >
+            {isSaving ? (
+              <RefreshCw size={20} className="animate-spin" />
+            ) : status === 'success' ? (
+              <CheckCircle2 size={20} />
+            ) : status === 'error' ? (
+              <AlertTriangle size={20} />
+            ) : (
+              <Save size={20} />
+            )}
+            {isSaving ? 'Publishing...' : status === 'success' ? 'Mission Published!' : status === 'error' ? 'Update Failed' : 'Publish New Drop'}
+          </button>
+        </div>
+      </div>
+
+      {/* Preview Section */}
+      <div className="mt-12 space-y-4">
+        <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 px-2">Live Preview</h3>
+        <div className="glass-card p-4 aspect-video">
+          {videoId ? (
+            <iframe
+              className="w-full h-full rounded-xl"
+              src={`https://www.youtube.com/embed/${videoId}?autoplay=0&controls=1&rel=0`}
+              title="Preview"
+              frameBorder="0"
+            ></iframe>
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-white/5 rounded-xl">
+              <p className="text-slate-600 font-bold uppercase tracking-widest text-xs">No Video ID Provided</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
 // --- Components ---
 
 const SidebarLink = ({ 
@@ -210,10 +379,15 @@ function ViewVibeApp() {
   const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail' | 'claimed'>('idle');
   const [leaderboardType, setLeaderboardType] = useState<'watchers' | 'promoters'>('watchers');
   const [watchTimer, setWatchTimer] = useState(0);
-  const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const isProcessingRef = React.useRef(false);
 
-  const currentVideo = VIDEOS[currentVideoIndex];
+  // --- Routing ---
+  useEffect(() => {
+    if (window.location.pathname === '/admin') {
+      setActiveTab('admin');
+    }
+  }, []);
 
   // --- Watch Timer ---
   useEffect(() => {
@@ -225,12 +399,34 @@ function ViewVibeApp() {
 
   // Set verification state to 'claimed' if user already claimed this video
   useEffect(() => {
-    if (user.claimedVideos?.includes(currentVideo.id)) {
+    if (settings && user.claimedVideos?.includes(settings.youtubeVideoId)) {
       setVerificationState('claimed');
     } else {
       setVerificationState('idle');
     }
-  }, [user.claimedVideos, currentVideoIndex]);
+  }, [user.claimedVideos, settings]);
+
+  // --- Settings Sync ---
+  useEffect(() => {
+    const settingsDocRef = doc(db, 'settings', 'currentDrop');
+    const unsubscribe = onSnapshot(settingsDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setSettings(docSnap.data() as Settings);
+      } else {
+        // Default settings if none exist
+        const defaultSettings: Settings = {
+          youtubeVideoId: "jNQXAC9IVRw",
+          correctColor: "Neon Green"
+        };
+        setSettings(defaultSettings);
+        setDoc(settingsDocRef, defaultSettings).catch(e => console.error("Failed to create default settings", e));
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'settings/currentDrop');
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // --- Auth & Firestore Sync ---
   useEffect(() => {
@@ -311,19 +507,19 @@ function ViewVibeApp() {
   };
 
   const handleVerify = async (color: string) => {
-    if (!currentUser || isProcessingRef.current) return;
+    if (!currentUser || isProcessingRef.current || !settings) return;
     if (verificationState !== 'idle') return;
     
     isProcessingRef.current = true;
 
     // Check if already claimed
-    if (user.claimedVideos?.includes(currentVideo.id)) {
+    if (user.claimedVideos?.includes(settings.youtubeVideoId)) {
       setVerificationState('claimed');
       isProcessingRef.current = false;
       return;
     }
 
-    if (color === currentVideo.secretColor) {
+    if (color === settings.correctColor) {
       setVerificationState('success');
       const newAmount = 50;
       // Convert seconds to minutes (at least 1 minute if watched any time)
@@ -334,14 +530,14 @@ function ViewVibeApp() {
         await updateDoc(userDocRef, {
           wallet: increment(newAmount),
           verifiedWatchTime: increment(newWatchTime),
-          claimedVideos: arrayUnion(currentVideo.id)
+          claimedVideos: arrayUnion(settings.youtubeVideoId)
         });
 
         const newTx: Transaction = {
           id: Date.now().toString(),
           type: 'earn',
           amount: newAmount,
-          note: `Video Reward: ${currentVideo.id}`,
+          note: `Video Reward: ${settings.youtubeVideoId}`,
           date: new Date().toISOString().split('T')[0]
         };
         setHistory(prev => [newTx, ...prev]);
@@ -515,15 +711,21 @@ function ViewVibeApp() {
                 {/* Left Column: Player */}
                 <div className="flex-[1.5] space-y-6">
                   <div className="glass-card p-2 aspect-video relative group overflow-hidden">
-                    <iframe
-                      key={currentVideo.id}
-                      className="w-full h-full rounded-xl"
-                      src={currentVideo.embedUrl}
-                      title="YouTube video player"
-                      frameBorder="0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    ></iframe>
+                    {settings ? (
+                      <iframe
+                        key={settings.youtubeVideoId}
+                        className="w-full h-full rounded-xl"
+                        src={`https://www.youtube.com/embed/${settings.youtubeVideoId}?autoplay=0&controls=1&rel=0`}
+                        title="YouTube video player"
+                        frameBorder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                      ></iframe>
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-white/5 rounded-xl animate-pulse">
+                        <Play size={48} className="text-white/20" />
+                      </div>
+                    )}
                   </div>
                   
                   <div className="glass-card p-6">
@@ -532,23 +734,7 @@ function ViewVibeApp() {
                         <div className="p-2 bg-orange-500/20 rounded-lg text-orange-500">
                           <Play size={24} />
                         </div>
-                        <h2 className="text-2xl font-black uppercase tracking-tight">{currentVideo.title}</h2>
-                      </div>
-                      <div className="flex gap-2">
-                        <button 
-                          onClick={() => setCurrentVideoIndex(prev => Math.max(0, prev - 1))}
-                          disabled={currentVideoIndex === 0}
-                          className="p-2 glass-card hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                          <ChevronRight size={20} className="rotate-180" />
-                        </button>
-                        <button 
-                          onClick={() => setCurrentVideoIndex(prev => Math.min(VIDEOS.length - 1, prev + 1))}
-                          disabled={currentVideoIndex === VIDEOS.length - 1}
-                          className="p-2 glass-card hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                          <ChevronRight size={20} />
-                        </button>
+                        <h2 className="text-2xl font-black uppercase tracking-tight">Today's Mission</h2>
                       </div>
                     </div>
                     <p className="text-slate-400 leading-relaxed mb-6">
@@ -600,12 +786,7 @@ function ViewVibeApp() {
                     </p>
 
                     <div className="grid grid-cols-2 gap-4">
-                      {[
-                        { name: 'Red Fire', color: 'bg-rose-500', shadow: 'hover:shadow-rose-500/40 hover:border-rose-500/50' },
-                        { name: 'Blue Water', color: 'bg-blue-500', shadow: 'hover:shadow-blue-500/40 hover:border-blue-500/50' },
-                        { name: 'Neon Green', color: 'bg-emerald-500', shadow: 'hover:shadow-emerald-500/40 hover:border-emerald-500/50' },
-                        { name: 'Yellow Thunder', color: 'bg-yellow-500', shadow: 'hover:shadow-yellow-500/40 hover:border-yellow-500/50' }
-                      ].map((btn) => (
+                      {COLORS.map((btn) => (
                         <motion.button
                           key={btn.name}
                           whileHover={{ scale: verificationState === 'idle' ? 1.05 : 1 }}
@@ -613,7 +794,7 @@ function ViewVibeApp() {
                           disabled={verificationState !== 'idle'}
                           onClick={() => handleVerify(btn.name)}
                           className={`glass-card p-6 flex flex-col items-center gap-4 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${btn.shadow} ${
-                            (verificationState === 'success' || verificationState === 'claimed') && btn.name === 'Neon Green' ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
+                            (verificationState === 'success' || verificationState === 'claimed') && btn.name === settings?.correctColor ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
                           }`}
                         >
                           <div className={`w-10 h-10 rounded-full ${btn.color} shadow-lg shadow-black/50`} />
@@ -664,7 +845,7 @@ function ViewVibeApp() {
                         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Watch Time</p>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-2xl font-black">{user.claimedVideos.length}/{VIDEOS.length}</p>
+                        <p className="text-2xl font-black">{user.claimedVideos.length}</p>
                         <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Drops Claimed</p>
                       </div>
                     </div>
@@ -910,6 +1091,14 @@ function ViewVibeApp() {
                 </div>
               </div>
             </motion.div>
+          )}
+
+          {activeTab === 'admin' && (
+            <AdminDashboard 
+              currentUser={currentUser} 
+              currentSettings={settings} 
+              onUpdate={setSettings} 
+            />
           )}
         </AnimatePresence>
       </main>
