@@ -10,19 +10,37 @@
         "wallet": { "type": "number", "description": "Current points balance" },
         "verifiedWatchTime": { "type": "number", "description": "Total verified watch time in minutes" },
         "referrals": { "type": "number", "description": "Total number of successful referrals" },
-        "claimedVideos": { "type": "array", "items": { "type": "string" }, "description": "List of video IDs for which rewards have been claimed" }
+        "claimedVideos": { "type": "array", "items": { "type": "string" }, "description": "List of video IDs for which rewards have been claimed" },
+        "activeMissionId": { "type": "string", "description": "ID of the currently active mission, if any" }
       },
       "required": ["displayName", "email", "wallet", "verifiedWatchTime", "referrals", "claimedVideos"]
     },
-    "Settings": {
-      "title": "Global Settings",
-      "description": "Stores global app configuration like the current video drop.",
+    "Video": {
+      "title": "Drop Video",
+      "description": "Stores individual video drop details.",
       "type": "object",
       "properties": {
-        "youtubeVideoId": { "type": "string", "description": "The ID of the current YouTube video" },
-        "correctColor": { "type": "string", "description": "The correct color for verification" }
+        "youtubeVideoId": { "type": "string", "description": "The ID of the YouTube video" },
+        "correctColor": { "type": "string", "description": "The correct color for verification" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the video was published" },
+        "isActive": { "type": "boolean", "description": "Whether the video is currently active" }
       },
-      "required": ["youtubeVideoId", "correctColor"]
+      "required": ["youtubeVideoId", "correctColor", "createdAt", "isActive"]
+    },
+    "Redemption": {
+      "title": "Reward Redemption",
+      "description": "Stores reward redemption requests and their status.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "UID of the user who redeemed the reward" },
+        "userEmail": { "type": "string", "description": "Email of the user" },
+        "displayName": { "type": "string", "description": "Display name of the user" },
+        "rewardName": { "type": "string", "description": "Name of the redeemed reward" },
+        "cost": { "type": "number", "description": "Points cost of the reward" },
+        "status": { "type": "string", "enum": ["Pending", "Completed"], "description": "Current status of fulfillment" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the redemption occurred" }
+      },
+      "required": ["userId", "userEmail", "displayName", "rewardName", "cost", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -30,9 +48,13 @@
       "schema": "User",
       "description": "User profile document indexed by Firebase Auth UID."
     },
-    "/settings/currentDrop": {
-      "schema": "Settings",
-      "description": "The current daily drop configuration."
+    "/videos/{videoId}": {
+      "schema": "Video",
+      "description": "Individual video drop documents."
+    },
+    "/redemptions/{redemptionId}": {
+      "schema": "Redemption",
+      "description": "Collection of reward redemption requests."
     }
   }
 }

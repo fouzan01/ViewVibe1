@@ -17,6 +17,16 @@ service cloud.firestore {
     //
     // ===============================================================
 
+    // Collection: videos
+    // Document ID: {videoId} (auto-generated)
+    // Fields:
+    //   - youtubeVideoId: string (required)
+    //   - correctColor: string (required)
+    //   - createdAt: timestamp (required)
+    //   - isActive: bool (required)
+    //
+    // ===============================================================
+
     // ===============================================================
     // Helper Functions
     // ===============================================================
@@ -38,13 +48,35 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return data.keys().hasAll(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos']) &&
-             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos']) &&
+             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'activeMissionId']) &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
              isValidEmail(data.email) &&
              data.wallet is number && data.wallet >= 0 &&
              data.verifiedWatchTime is number && data.verifiedWatchTime >= 0 &&
              data.referrals is number && data.referrals >= 0 &&
-             data.claimedVideos is list;
+             data.claimedVideos is list &&
+             (!('activeMissionId' in data) || data.activeMissionId == null || data.activeMissionId is string);
+    }
+
+    function isValidVideo(data) {
+      return data.keys().hasAll(['youtubeVideoId', 'correctColor', 'createdAt', 'isActive']) &&
+             data.keys().hasOnly(['youtubeVideoId', 'correctColor', 'createdAt', 'isActive']) &&
+             data.youtubeVideoId is string && data.youtubeVideoId.size() > 0 &&
+             data.correctColor is string &&
+             data.createdAt is timestamp &&
+             data.isActive is bool;
+    }
+
+    function isValidRedemption(data) {
+      return data.keys().hasAll(['userId', 'userEmail', 'displayName', 'rewardName', 'cost', 'status', 'createdAt']) &&
+             data.keys().hasOnly(['userId', 'userEmail', 'displayName', 'rewardName', 'cost', 'status', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.userEmail == request.auth.token.email &&
+             data.displayName is string && data.displayName.size() > 0 &&
+             data.rewardName is string && data.rewardName.size() > 0 &&
+             data.cost is number && data.cost >= 0 &&
+             data.status in ['Pending', 'Completed'] &&
+             data.createdAt is timestamp;
     }
 
     match /users/{userId} {
@@ -53,9 +85,16 @@ service cloud.firestore {
       allow update: if isOwner(userId) && isValidUser(request.resource.data);
     }
 
-    match /settings/currentDrop {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin();
+    match /videos/{videoId} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidVideo(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /redemptions/{redemptionId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidRedemption(request.resource.data);
+      allow update: if isAdmin() && request.resource.data.status in ['Pending', 'Completed'];
     }
   }
 }

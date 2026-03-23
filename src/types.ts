@@ -5,6 +5,7 @@ export interface UserData {
   verifiedWatchTime: number;
   referrals: number;
   claimedVideos: string[];
+  activeMissionId?: string | null;
 }
 
 export interface Transaction {
@@ -15,7 +16,15 @@ export interface Transaction {
   date: string;
 }
 
-export type ActiveTab = 'dailyDrop' | 'leaderboard' | 'wallet' | 'referrals' | 'admin';
+export type ActiveTab = 'missionBoard' | 'leaderboard' | 'wallet' | 'referrals' | 'admin';
+
+export interface Video {
+  id?: string;
+  youtubeVideoId: string;
+  correctColor: string;
+  createdAt: any; // Firestore Timestamp
+  isActive: boolean;
+}
 
 export interface Settings {
   youtubeVideoId: string;
@@ -34,6 +43,17 @@ export interface RewardItem {
   name: string;
   cost: number;
   description: string;
+}
+
+export interface Redemption {
+  id?: string;
+  userId: string;
+  userEmail: string;
+  displayName: string;
+  rewardName: string;
+  cost: number;
+  status: 'Pending' | 'Completed';
+  createdAt: any; // Firestore Timestamp
 }
 
 export enum OperationType {

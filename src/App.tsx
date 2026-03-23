@@ -24,10 +24,13 @@ import {
   LogOut,
   Lock,
   RefreshCw,
-  Save
+  Save,
+  Trash2,
+  EyeOff,
+  Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings } from './types';
+import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings, Video, Redemption } from './types';
 import { auth, db, googleProvider } from './firebase';
 import { 
   signInWithPopup, 
@@ -43,7 +46,14 @@ import {
   onSnapshot, 
   increment,
   getDocFromServer,
-  arrayUnion
+  arrayUnion,
+  collection,
+  addDoc,
+  query,
+  orderBy,
+  deleteDoc,
+  where,
+  serverTimestamp
 } from 'firebase/firestore';
 
 const ADMIN_EMAIL = "fouzan1605@gmail.com";
@@ -134,6 +144,7 @@ const INITIAL_USER_DATA: UserData = {
   verifiedWatchTime: 0,
   referrals: 0,
   claimedVideos: [],
+  activeMissionId: null,
 };
 
 const INITIAL_HISTORY: Transaction[] = [
@@ -168,46 +179,134 @@ const REWARDS: RewardItem[] = [
 // --- Admin Dashboard ---
 
 const AdminDashboard = ({ 
-  currentUser, 
-  currentSettings, 
-  onUpdate 
+  currentUser,
 }: { 
   currentUser: FirebaseUser | null, 
-  currentSettings: Settings | null,
-  onUpdate: (s: Settings) => void
 }) => {
-  const [videoId, setVideoId] = useState(currentSettings?.youtubeVideoId || '');
-  const [color, setColor] = useState(currentSettings?.correctColor || 'Neon Green');
+  const [videoId, setVideoId] = useState('');
+  const [color, setColor] = useState('Neon Green');
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [videos, setVideos] = useState<Video[]>([]);
+  const [redemptions, setRedemptions] = useState<Redemption[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRedemptionsLoading, setIsRedemptionsLoading] = useState(true);
 
   const isAdmin = currentUser?.email === ADMIN_EMAIL;
 
   useEffect(() => {
-    if (currentSettings) {
-      setVideoId(currentSettings.youtubeVideoId);
-      setColor(currentSettings.correctColor);
-    }
-  }, [currentSettings]);
+    if (!isAdmin) return;
+    const vQuery = query(collection(db, 'videos'));
+    const unsubscribe = onSnapshot(vQuery, (snapshot) => {
+      const vList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Video))
+        .sort((a, b) => {
+          const timeA = a.createdAt?.toMillis?.() || 0;
+          const timeB = b.createdAt?.toMillis?.() || 0;
+          return timeB - timeA;
+        });
+      setVideos(vList);
+      setIsLoading(false);
+    }, (error) => {
+      console.error("AdminDashboard fetch error:", error);
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const rQuery = query(
+      collection(db, 'redemptions'), 
+      where('status', '==', 'Pending'),
+      orderBy('createdAt', 'asc')
+    );
+    const unsubscribe = onSnapshot(rQuery, (snapshot) => {
+      const rList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Redemption));
+      setRedemptions(rList);
+      setIsRedemptionsLoading(false);
+    }, (error) => {
+      console.error("Redemptions fetch error:", error);
+      setIsRedemptionsLoading(false);
+    });
+    return () => unsubscribe();
+  }, [isAdmin]);
 
   const handlePublish = async () => {
-    if (!isAdmin || isSaving) return;
+    if (!isAdmin || isSaving || !videoId) return;
     setIsSaving(true);
     setStatus('idle');
 
     try {
-      const settingsDocRef = doc(db, 'settings', 'currentDrop');
-      const newSettings: Settings = {
+      await addDoc(collection(db, 'videos'), {
         youtubeVideoId: videoId,
-        correctColor: color
-      };
-      await setDoc(settingsDocRef, newSettings);
-      onUpdate(newSettings);
+        correctColor: color,
+        createdAt: serverTimestamp(),
+        isActive: true
+      });
+      setVideoId('');
       setStatus('success');
       setTimeout(() => setStatus('idle'), 3000);
     } catch (error) {
-      console.error("Failed to update settings:", error);
+      console.error("Failed to add video:", error);
       setStatus('error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const toggleVideoStatus = async (video: Video) => {
+    if (!isAdmin || !video.id) return;
+    try {
+      await updateDoc(doc(db, 'videos', video.id), {
+        isActive: !video.isActive
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `videos/${video.id}`);
+    }
+  };
+
+  const deleteVideo = async (id: string) => {
+    if (!isAdmin || !id) return;
+    if (!window.confirm('Are you sure you want to delete this mission?')) return;
+    try {
+      await deleteDoc(doc(db, 'videos', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `videos/${id}`);
+    }
+  };
+
+  const completeRedemption = async (id: string) => {
+    if (!isAdmin || !id) return;
+    try {
+      await updateDoc(doc(db, 'redemptions', id), {
+        status: 'Completed'
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `redemptions/${id}`);
+    }
+  };
+
+  const seedSampleData = async () => {
+    if (!isAdmin || isSaving) return;
+    setIsSaving(true);
+    try {
+      const sampleVideos = [
+        { youtubeVideoId: 'jNQXAC9IVRw', correctColor: 'Neon Green', isActive: true },
+        { youtubeVideoId: 'dQw4w9WgXcQ', correctColor: 'Blue Water', isActive: true },
+        { youtubeVideoId: '9bZkp7q19f0', correctColor: 'Red Fire', isActive: true }
+      ];
+
+      for (const v of sampleVideos) {
+        await addDoc(collection(db, 'videos'), {
+          ...v,
+          createdAt: serverTimestamp()
+        });
+      }
+      alert("Sample missions seeded successfully!");
+    } catch (error) {
+      console.error("Failed to seed data:", error);
+      alert("Failed to seed data.");
     } finally {
       setIsSaving(false);
     }
@@ -233,64 +332,66 @@ const AdminDashboard = ({
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="max-w-2xl mx-auto"
+      className="max-w-4xl mx-auto space-y-12"
     >
-      <div className="flex items-center gap-4 mb-10">
+      <div className="flex items-center gap-4">
         <div className="p-3 bg-orange-500/20 rounded-2xl text-orange-500">
           <Lock size={32} />
         </div>
         <div>
-          <h2 className="text-4xl font-black uppercase tracking-tighter">Admin Control</h2>
-          <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Mission Management System</p>
+          <h2 className="text-4xl font-black uppercase tracking-tighter">Mission Control</h2>
+          <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Global Drop Management System</p>
         </div>
       </div>
 
-      <div className="glass-card p-8 space-y-8">
-        <div className="space-y-4">
-          <label className="text-xs font-black uppercase tracking-widest text-slate-500">YouTube Video ID</label>
-          <div className="relative">
-            <input 
-              type="text"
-              value={videoId}
-              onChange={(e) => setVideoId(e.target.value)}
-              placeholder="e.g. jNQXAC9IVRw"
-              className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 text-white font-mono focus:border-orange-500 outline-none transition-colors"
-            />
-            <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600">
-              <Play size={18} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Add New Mission */}
+        <div className="glass-card p-8 space-y-8 h-fit sticky top-8">
+          <h3 className="text-xs font-black uppercase tracking-[0.2em] text-orange-500">Publish New Mission</h3>
+          
+          <div className="space-y-4">
+            <label className="text-xs font-black uppercase tracking-widest text-slate-500">YouTube Video ID</label>
+            <div className="relative">
+              <input 
+                type="text"
+                value={videoId}
+                onChange={(e) => setVideoId(e.target.value)}
+                placeholder="e.g. jNQXAC9IVRw"
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-4 text-white font-mono focus:border-orange-500 outline-none transition-colors"
+              />
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600">
+                <Play size={18} />
+              </div>
             </div>
           </div>
-          <p className="text-[10px] text-slate-500 italic">Paste the ID from the YouTube URL (e.g. watch?v=ID_HERE)</p>
-        </div>
 
-        <div className="space-y-4">
-          <label className="text-xs font-black uppercase tracking-widest text-slate-500">Correct Verification Color</label>
-          <div className="grid grid-cols-2 gap-4">
-            {COLORS.map((c) => (
-              <button
-                key={c.name}
-                onClick={() => setColor(c.name)}
-                className={`p-4 glass-card flex items-center gap-3 transition-all ${
-                  color === c.name ? 'border-orange-500 bg-orange-500/10' : 'hover:bg-white/5'
-                }`}
-              >
-                <div className={`w-4 h-4 rounded-full ${c.color}`} />
-                <span className="text-xs font-bold uppercase tracking-tight">{c.name}</span>
-              </button>
-            ))}
+          <div className="space-y-4">
+            <label className="text-xs font-black uppercase tracking-widest text-slate-500">Correct Verification Color</label>
+            <div className="grid grid-cols-2 gap-4">
+              {COLORS.map((c) => (
+                <button
+                  key={c.name}
+                  onClick={() => setColor(c.name)}
+                  className={`p-4 glass-card flex items-center gap-3 transition-all ${
+                    color === c.name ? 'border-orange-500 bg-orange-500/10' : 'hover:bg-white/5'
+                  }`}
+                >
+                  <div className={`w-4 h-4 rounded-full ${c.color}`} />
+                  <span className="text-xs font-bold uppercase tracking-tight">{c.name}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        <div className="pt-4">
           <button
             onClick={handlePublish}
-            disabled={isSaving}
+            disabled={isSaving || !videoId}
             className={`w-full py-5 rounded-2xl font-black uppercase tracking-[0.2em] text-sm flex items-center justify-center gap-3 transition-all ${
               status === 'success' 
                 ? 'bg-emerald-500 text-white' 
                 : status === 'error'
                 ? 'bg-rose-500 text-white'
-                : 'bg-orange-500 hover:bg-orange-600 text-white hover:scale-[1.02] shadow-xl shadow-orange-500/20'
+                : 'bg-orange-500 hover:bg-orange-600 text-white hover:scale-[1.02] shadow-xl shadow-orange-500/20 disabled:opacity-50 disabled:hover:scale-100'
             }`}
           >
             {isSaving ? (
@@ -302,30 +403,448 @@ const AdminDashboard = ({
             ) : (
               <Save size={20} />
             )}
-            {isSaving ? 'Publishing...' : status === 'success' ? 'Mission Published!' : status === 'error' ? 'Update Failed' : 'Publish New Drop'}
+            {isSaving ? 'Publishing...' : status === 'success' ? 'Mission Published!' : status === 'error' ? 'Update Failed' : 'Add to Mission Board'}
           </button>
+
+          <button
+            onClick={seedSampleData}
+            disabled={isSaving}
+            className="w-full py-3 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-white/5 transition-all"
+          >
+            Seed Sample Missions
+          </button>
+        </div>
+
+        {/* Mission Backlog */}
+        <div className="space-y-6">
+          <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-500 px-2">Active Mission Backlog</h3>
+          
+          <div className="space-y-4">
+            {isLoading ? (
+              <div className="flex justify-center py-12">
+                <RefreshCw className="animate-spin text-orange-500" size={32} />
+              </div>
+            ) : videos.length === 0 ? (
+              <div className="glass-card p-12 text-center text-slate-600 font-bold uppercase tracking-widest text-xs">
+                No missions published yet
+              </div>
+            ) : (
+              videos.map((v) => (
+                <div key={v.id} className={`glass-card p-4 flex items-center gap-4 border-l-4 ${v.isActive ? 'border-emerald-500' : 'border-slate-700 opacity-60'}`}>
+                  <div className="w-24 aspect-video rounded-lg overflow-hidden bg-black/40 relative group">
+                    <img 
+                      src={`https://img.youtube.com/vi/${v.youtubeVideoId}/mqdefault.jpg`} 
+                      alt="Thumbnail" 
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Play size={16} className="text-white" />
+                    </div>
+                  </div>
+                  
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-mono text-slate-400 truncate">{v.youtubeVideoId}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className={`w-2 h-2 rounded-full ${COLORS.find(c => c.name === v.correctColor)?.color || 'bg-white'}`} />
+                      <p className="text-[10px] font-black uppercase tracking-widest text-white">{v.correctColor}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => toggleVideoStatus(v)}
+                      className={`p-2 rounded-lg transition-colors ${v.isActive ? 'text-emerald-500 hover:bg-emerald-500/10' : 'text-slate-500 hover:bg-white/5'}`}
+                      title={v.isActive ? 'Deactivate' : 'Activate'}
+                    >
+                      {v.isActive ? <Eye size={18} /> : <EyeOff size={18} />}
+                    </button>
+                    <button 
+                      onClick={() => v.id && deleteVideo(v.id)}
+                      className="p-2 text-slate-500 hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+                      title="Delete"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Preview Section */}
-      <div className="mt-12 space-y-4">
-        <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 px-2">Live Preview</h3>
-        <div className="glass-card p-4 aspect-video">
-          {videoId ? (
-            <iframe
-              className="w-full h-full rounded-xl"
-              src={`https://www.youtube.com/embed/${videoId}?autoplay=0&controls=1&rel=0`}
-              title="Preview"
-              frameBorder="0"
-            ></iframe>
+      {/* Pending Redemptions Section */}
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <Gift className="text-purple-500" />
+          <h3 className="text-2xl font-black uppercase tracking-tight">Pending Redemptions</h3>
+        </div>
+        
+        <div className="glass-card overflow-hidden">
+          {isRedemptionsLoading ? (
+            <div className="flex justify-center py-12">
+              <RefreshCw className="animate-spin text-purple-500" size={32} />
+            </div>
+          ) : redemptions.length === 0 ? (
+            <div className="p-12 text-center text-slate-600 font-bold uppercase tracking-widest text-xs">
+              No pending orders in queue
+            </div>
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-white/5 rounded-xl">
-              <p className="text-slate-600 font-bold uppercase tracking-widest text-xs">No Video ID Provided</p>
+            <div className="divide-y divide-white/5">
+              {redemptions.map((r) => (
+                <div key={r.id} className="p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 hover:bg-white/5 transition-colors">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-black text-white uppercase tracking-tight">{r.rewardName}</h4>
+                      <span className="px-2 py-0.5 bg-purple-500/20 text-purple-400 text-[8px] font-black rounded uppercase tracking-widest">
+                        {r.cost} PTS
+                      </span>
+                    </div>
+                    <div className="flex flex-col text-xs text-slate-400 font-medium">
+                      <span>{r.displayName} ({r.userEmail})</span>
+                      <span className="text-[10px] text-slate-500 uppercase tracking-widest">
+                        Ordered: {r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'Recently'}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  <button
+                    onClick={() => r.id && completeRedemption(r.id)}
+                    className="px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-black uppercase tracking-widest text-[10px] rounded-xl transition-all hover:scale-105 shadow-lg shadow-emerald-500/20 flex items-center gap-2"
+                  >
+                    <CheckCircle2 size={14} />
+                    Mark as Completed
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>
       </div>
     </motion.div>
+  );
+};
+
+// --- Mission Board ---
+
+const MissionBoard = ({ 
+  user, 
+  currentUser, 
+  onRewardClaimed 
+}: { 
+  user: UserData, 
+  currentUser: FirebaseUser | null,
+  onRewardClaimed: (videoId: string, points: number) => void
+}) => {
+  const [videos, setVideos] = useState<Video[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
+  const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail' | 'claimed'>('idle');
+  const [watchTimer, setWatchTimer] = useState(0);
+  const isProcessingRef = React.useRef(false);
+
+  useEffect(() => {
+    const vQuery = query(collection(db, 'videos'));
+    const unsubscribe = onSnapshot(vQuery, (snapshot) => {
+      const vList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Video))
+        .filter(v => v.isActive)
+        .sort((a, b) => {
+          const timeA = a.createdAt?.toMillis?.() || 0;
+          const timeB = b.createdAt?.toMillis?.() || 0;
+          return timeB - timeA;
+        });
+      setVideos(vList);
+      setIsLoading(false);
+    }, (error) => {
+      console.error("MissionBoard fetch error:", error);
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, [currentUser]);
+
+  useEffect(() => {
+    let interval: any;
+    if (selectedVideo) {
+      interval = setInterval(() => {
+        setWatchTimer(prev => prev + 1);
+      }, 1000);
+    } else {
+      setWatchTimer(0);
+    }
+    return () => clearInterval(interval);
+  }, [selectedVideo]);
+
+  const handleVideoSelect = async (video: Video) => {
+    if (user.claimedVideos.includes(video.youtubeVideoId)) return;
+    setSelectedVideo(video);
+    setVerificationState('idle');
+    setWatchTimer(0);
+
+    // Persist active mission if logged in
+    if (currentUser) {
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid), {
+          activeMissionId: video.id
+        });
+      } catch (error) {
+        console.error("Failed to persist active mission:", error);
+      }
+    }
+  };
+
+  const handleCancelMission = async () => {
+    setSelectedVideo(null);
+    if (currentUser) {
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid), {
+          activeMissionId: null
+        });
+      } catch (error) {
+        console.error("Failed to clear active mission:", error);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (user.activeMissionId && videos.length > 0 && !selectedVideo) {
+      const active = videos.find(v => v.id === user.activeMissionId);
+      if (active && !user.claimedVideos.includes(active.youtubeVideoId)) {
+        setSelectedVideo(active);
+      }
+    }
+  }, [user.activeMissionId, videos, selectedVideo, user.claimedVideos]);
+
+  const handleVerify = async (color: string) => {
+    if (!currentUser || isProcessingRef.current || !selectedVideo) return;
+    if (verificationState !== 'idle') return;
+    
+    isProcessingRef.current = true;
+
+    if (color === selectedVideo.correctColor) {
+      setVerificationState('success');
+      const points = 50;
+      onRewardClaimed(selectedVideo.youtubeVideoId, points);
+      
+      // Clear active mission on success
+      if (currentUser) {
+        updateDoc(doc(db, 'users', currentUser.uid), {
+          activeMissionId: null
+        }).catch(e => console.error("Failed to clear mission on success:", e));
+      }
+
+      setTimeout(() => {
+        setSelectedVideo(null);
+        isProcessingRef.current = false;
+      }, 2000);
+    } else {
+      setVerificationState('fail');
+      setTimeout(() => {
+        setVerificationState('idle');
+        isProcessingRef.current = false;
+      }, 2000);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20">
+        <RefreshCw className="animate-spin text-orange-500 mb-4" size={48} />
+        <p className="text-slate-500 font-black uppercase tracking-widest text-xs">Loading Missions...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-12">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h2 className="text-5xl font-black uppercase tracking-tighter mb-2">Mission Board</h2>
+          <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Complete drops to earn elite rewards</p>
+        </div>
+        <div className="flex items-center gap-4 glass-card px-6 py-3 bg-white/5">
+          <div className="text-right">
+            <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Completed</p>
+            <p className="text-xl font-black text-white">{user.claimedVideos.length} / {videos.length}</p>
+          </div>
+          <div className="w-px h-8 bg-white/10" />
+          <Trophy className="text-orange-500" size={24} />
+        </div>
+      </div>
+
+      <AnimatePresence mode="wait">
+        {selectedVideo ? (
+          <motion.div
+            key="active-mission"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="grid grid-cols-1 lg:grid-cols-3 gap-8"
+          >
+            <div className="lg:col-span-2 space-y-6">
+              <div className="glass-card p-2 aspect-video relative overflow-hidden">
+                <iframe
+                  className="w-full h-full rounded-xl"
+                  src={`https://www.youtube.com/embed/${selectedVideo.youtubeVideoId}?autoplay=1&controls=1&rel=0`}
+                  title="Mission Video"
+                  frameBorder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                ></iframe>
+              </div>
+              <div className="flex items-center justify-between p-6 glass-card">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-orange-500/20 rounded-xl text-orange-500">
+                    <Play size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black uppercase tracking-tight">Active Mission</h3>
+                    <p className="text-xs text-slate-500 font-mono">{selectedVideo.youtubeVideoId}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={handleCancelMission}
+                  className="px-4 py-2 text-slate-400 hover:text-white font-black uppercase tracking-widest text-[10px] transition-colors"
+                >
+                  Cancel Mission
+                </button>
+              </div>
+            </div>
+
+            <div className="glass-card p-8 flex flex-col items-center text-center">
+              <h3 className="text-xl font-black uppercase tracking-widest mb-2">Verification</h3>
+              <p className={`text-sm font-bold uppercase tracking-widest mb-8 ${
+                verificationState === 'idle' ? 'text-slate-500' : 
+                verificationState === 'success' ? 'text-emerald-500' : 'text-rose-500'
+              }`}>
+                {verificationState === 'idle' && 'Select the Hidden Color'}
+                {verificationState === 'success' && 'Mission Accomplished!'}
+                {verificationState === 'fail' && 'Incorrect Selection!'}
+              </p>
+
+              <div className="grid grid-cols-2 gap-4 w-full">
+                {COLORS.map((btn) => (
+                  <motion.button
+                    key={btn.name}
+                    whileHover={{ scale: verificationState === 'idle' ? 1.05 : 1 }}
+                    whileTap={{ scale: verificationState === 'idle' ? 0.95 : 1 }}
+                    disabled={verificationState !== 'idle'}
+                    onClick={() => handleVerify(btn.name)}
+                    className={`glass-card p-6 flex flex-col items-center gap-4 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${btn.shadow} ${
+                      verificationState === 'success' && btn.name === selectedVideo.correctColor ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
+                    }`}
+                  >
+                    <div className={`w-10 h-10 rounded-full ${btn.color} shadow-lg shadow-black/50`} />
+                    <span className="text-xs font-black uppercase tracking-tighter">{btn.name}</span>
+                  </motion.button>
+                ))}
+              </div>
+
+              {verificationState === 'success' && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-8 p-4 w-full glass-card border-emerald-500/30 bg-emerald-500/10 flex items-center justify-center gap-3"
+                >
+                  <CheckCircle2 className="text-emerald-500" />
+                  <span className="font-bold text-emerald-400">+50 PTS AWARDED</span>
+                </motion.div>
+              )}
+
+              {verificationState === 'fail' && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-8 p-4 w-full glass-card border-rose-500/30 bg-rose-500/10 flex items-center justify-center gap-3"
+                >
+                  <XCircle className="text-rose-500" />
+                  <span className="font-bold text-rose-400">ACCESS DENIED</span>
+                </motion.div>
+              )}
+
+              <div className="mt-auto pt-8 w-full">
+                <div className="flex justify-between text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+                  <span>Watch Progress</span>
+                  <span>{Math.min(100, Math.floor((watchTimer / 60) * 100))}%</span>
+                </div>
+                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.min(100, (watchTimer / 60) * 100)}%` }}
+                    className="h-full bg-orange-500"
+                  />
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="mission-grid"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"
+          >
+            {videos.length === 0 ? (
+              <div className="col-span-full py-20 text-center glass-card">
+                <p className="text-slate-500 font-black uppercase tracking-widest text-xs">No active missions available</p>
+                <p className="text-slate-600 text-[10px] mt-2">Check back later for new drops!</p>
+              </div>
+            ) : (
+              videos.map((v) => {
+                const isClaimed = user.claimedVideos.includes(v.youtubeVideoId);
+                return (
+                  <motion.button
+                    key={v.id}
+                    whileHover={!isClaimed ? { y: -5, scale: 1.02 } : {}}
+                    onClick={() => handleVideoSelect(v)}
+                    className={`glass-card p-4 text-left group transition-all duration-300 ${
+                      isClaimed ? 'opacity-50 grayscale cursor-default' : 'hover:border-orange-500/50'
+                    }`}
+                  >
+                    <div className="aspect-video rounded-xl overflow-hidden mb-4 relative">
+                      <img 
+                        src={`https://img.youtube.com/vi/${v.youtubeVideoId}/maxresdefault.jpg`} 
+                        alt="Mission Thumbnail" 
+                        className="w-full h-full object-cover"
+                      />
+                      {!isClaimed && (
+                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="p-3 bg-orange-500 rounded-full text-white shadow-xl shadow-orange-500/40">
+                            <Play size={24} fill="currentColor" />
+                          </div>
+                        </div>
+                      )}
+                      {isClaimed && (
+                        <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                          <div className="px-4 py-2 bg-emerald-500 text-white text-[10px] font-black uppercase tracking-widest rounded-full flex items-center gap-2">
+                            <CheckCircle2 size={14} />
+                            Completed
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h4 className="font-black uppercase tracking-tight text-lg mb-1 group-hover:text-orange-500 transition-colors">
+                          Mission Drop
+                        </h4>
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                          {v.createdAt?.toDate ? v.createdAt.toDate().toLocaleDateString() : 'Recent Drop'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 text-orange-500">
+                        <span className="text-sm font-black">+50</span>
+                        <span className="text-[8px] font-bold uppercase">PTS</span>
+                      </div>
+                    </div>
+                  </motion.button>
+                );
+              })
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 };
 
@@ -374,12 +893,9 @@ function ViewVibeApp() {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [history, setHistory] = useState<Transaction[]>(INITIAL_HISTORY);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dailyDrop');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('missionBoard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail' | 'claimed'>('idle');
   const [leaderboardType, setLeaderboardType] = useState<'watchers' | 'promoters'>('watchers');
-  const [watchTimer, setWatchTimer] = useState(0);
-  const [settings, setSettings] = useState<Settings | null>(null);
   const isProcessingRef = React.useRef(false);
 
   // --- Routing ---
@@ -387,45 +903,6 @@ function ViewVibeApp() {
     if (window.location.pathname === '/admin') {
       setActiveTab('admin');
     }
-  }, []);
-
-  // --- Watch Timer ---
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setWatchTimer(prev => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Set verification state to 'claimed' if user already claimed this video
-  useEffect(() => {
-    if (settings && user.claimedVideos?.includes(settings.youtubeVideoId)) {
-      setVerificationState('claimed');
-    } else {
-      setVerificationState('idle');
-    }
-  }, [user.claimedVideos, settings]);
-
-  // --- Settings Sync ---
-  useEffect(() => {
-    const settingsDocRef = doc(db, 'settings', 'currentDrop');
-    const unsubscribe = onSnapshot(settingsDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setSettings(docSnap.data() as Settings);
-      } else {
-        // Default settings if none exist
-        const defaultSettings: Settings = {
-          youtubeVideoId: "jNQXAC9IVRw",
-          correctColor: "Neon Green"
-        };
-        setSettings(defaultSettings);
-        setDoc(settingsDocRef, defaultSettings).catch(e => console.error("Failed to create default settings", e));
-      }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'settings/currentDrop');
-    });
-
-    return () => unsubscribe();
   }, []);
 
   // --- Auth & Firestore Sync ---
@@ -446,6 +923,7 @@ function ViewVibeApp() {
               verifiedWatchTime: 0,
               referrals: 0,
               claimedVideos: [],
+              activeMissionId: null,
             };
             await setDoc(userDocRef, newUserData);
           }
@@ -506,74 +984,119 @@ function ViewVibeApp() {
     }
   };
 
-  const handleVerify = async (color: string) => {
-    if (!currentUser || isProcessingRef.current || !settings) return;
-    if (verificationState !== 'idle') return;
+  const handleRewardClaimed = async (videoId: string, points: number) => {
+    if (!currentUser || isProcessingRef.current) return;
     
     isProcessingRef.current = true;
 
     // Check if already claimed
-    if (user.claimedVideos?.includes(settings.youtubeVideoId)) {
-      setVerificationState('claimed');
+    if (user.claimedVideos?.includes(videoId)) {
       isProcessingRef.current = false;
       return;
     }
 
-    if (color === settings.correctColor) {
-      setVerificationState('success');
-      const newAmount = 50;
-      // Convert seconds to minutes (at least 1 minute if watched any time)
-      const newWatchTime = Math.max(1, Math.floor(watchTimer / 60));
-      
-      const userDocRef = doc(db, 'users', currentUser.uid);
-      try {
-        await updateDoc(userDocRef, {
-          wallet: increment(newAmount),
-          verifiedWatchTime: increment(newWatchTime),
-          claimedVideos: arrayUnion(settings.youtubeVideoId)
-        });
+    const userDocRef = doc(db, 'users', currentUser.uid);
+    try {
+      await updateDoc(userDocRef, {
+        wallet: increment(points),
+        verifiedWatchTime: increment(1), // Increment by 1 minute for each mission
+        claimedVideos: arrayUnion(videoId)
+      });
 
-        const newTx: Transaction = {
-          id: Date.now().toString(),
-          type: 'earn',
-          amount: newAmount,
-          note: `Video Reward: ${settings.youtubeVideoId}`,
-          date: new Date().toISOString().split('T')[0]
-        };
-        setHistory(prev => [newTx, ...prev]);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
-      } finally {
-        isProcessingRef.current = false;
-      }
-    } else {
-      setVerificationState('fail');
+      const newTx: Transaction = {
+        id: Date.now().toString(),
+        type: 'earn',
+        amount: points,
+        note: `Mission Accomplished: ${videoId}`,
+        date: new Date().toISOString().split('T')[0]
+      };
+      setHistory(prev => [newTx, ...prev]);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
+    } finally {
       isProcessingRef.current = false;
     }
   };
 
-  const handleRedeem = (item: RewardItem) => {
-    if (user.wallet < item.cost) return;
+  const handleRedeem = async (item: RewardItem) => {
+    if (!currentUser || isProcessingRef.current) return;
+    
+    if (user.wallet < item.cost) {
+      alert("Insufficient Balance. Keep watching drops to earn more!");
+      return;
+    }
 
-    setUser(prev => ({
-      ...prev,
-      wallet: prev.wallet - item.cost
-    }));
+    if (!window.confirm(`Redeem ${item.name} for ${item.cost} points?`)) return;
 
-    const newTx: Transaction = {
-      id: Date.now().toString(),
-      type: 'spend',
-      amount: item.cost,
-      note: `Redeemed: ${item.name}`,
-      date: new Date().toISOString().split('T')[0]
-    };
-    setHistory(prev => [newTx, ...prev]);
+    isProcessingRef.current = true;
+
+    try {
+      const userDocRef = doc(db, 'users', currentUser.uid);
+      
+      // 1. Deduct points
+      await updateDoc(userDocRef, {
+        wallet: increment(-item.cost)
+      });
+
+      // 2. Create redemption record
+      await addDoc(collection(db, 'redemptions'), {
+        userId: currentUser.uid,
+        userEmail: currentUser.email,
+        displayName: user.displayName,
+        rewardName: item.name,
+        cost: item.cost,
+        status: 'Pending',
+        createdAt: serverTimestamp()
+      });
+
+      // 3. Add to local history (optional, but good for UX)
+      const newTx: Transaction = {
+        id: Date.now().toString(),
+        type: 'spend',
+        amount: item.cost,
+        note: `Redeemed: ${item.name}`,
+        date: new Date().toISOString().split('T')[0]
+      };
+      setHistory(prev => [newTx, ...prev]);
+
+      alert("Reward Claimed! The admin has been notified and your shoutout is pending.");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'redemptions');
+    } finally {
+      isProcessingRef.current = false;
+    }
   };
 
   const copyReferral = () => {
     navigator.clipboard.writeText('viewvibe.com/join?ref=guest99');
     // In a real app, we'd show a toast here
   };
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-[#05050a] flex flex-col items-center justify-center p-4">
+        <motion.div
+          animate={{ 
+            scale: [1, 1.1, 1],
+            rotate: [0, 5, -5, 0]
+          }}
+          transition={{ duration: 2, repeat: Infinity }}
+          className="text-5xl font-black tracking-tighter mb-8"
+        >
+          <span className="text-white">View</span>
+          <span className="bg-clip-text text-transparent bg-gradient-to-r from-orange-400 to-purple-500">Vibe</span>
+        </motion.div>
+        <div className="w-48 h-1.5 bg-white/5 rounded-full overflow-hidden relative">
+          <motion.div 
+            animate={{ left: ['-100%', '100%'] }}
+            transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+            className="absolute top-0 w-1/2 h-full bg-gradient-to-r from-transparent via-orange-500 to-transparent"
+          />
+        </div>
+        <p className="mt-4 text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] animate-pulse">Syncing with Grid...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row relative">
@@ -614,9 +1137,9 @@ function ViewVibeApp() {
             <nav className="flex-1 mt-4">
               <SidebarLink 
                 icon={Play} 
-                label="Daily Drop" 
-                active={activeTab === 'dailyDrop'} 
-                onClick={() => { setActiveTab('dailyDrop'); setIsMobileMenuOpen(false); }} 
+                label="Mission Board" 
+                active={activeTab === 'missionBoard'} 
+                onClick={() => { setActiveTab('missionBoard'); setIsMobileMenuOpen(false); }} 
               />
               <SidebarLink 
                 icon={Trophy} 
@@ -660,7 +1183,9 @@ function ViewVibeApp() {
                           <span className="px-1.5 py-0.5 bg-orange-500 text-[8px] font-black text-white rounded-sm uppercase tracking-tighter">Admin</span>
                         )}
                       </div>
-                      <p className="text-sm font-bold text-white truncate max-w-[140px]">{user.displayName}</p>
+                      <p className="text-sm font-bold text-white truncate max-w-[140px]">
+                        {user.displayName === 'Guest User' ? 'Loading Profile...' : user.displayName}
+                      </p>
                     </div>
                     <button 
                       onClick={handleSignOut} 
@@ -712,167 +1237,19 @@ function ViewVibeApp() {
       {/* Main Content Area */}
       <main className="flex-1 p-4 md:p-10 z-10 overflow-y-auto max-h-screen">
         <AnimatePresence mode="wait">
-          {activeTab === 'dailyDrop' && (
+          {activeTab === 'missionBoard' && (
             <motion.div
-              key="dailyDrop"
+              key="missionBoard"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
               className="max-w-6xl mx-auto"
             >
-              <div className="flex flex-col lg:flex-row gap-8">
-                {/* Left Column: Player */}
-                <div className="flex-[1.5] space-y-6">
-                  <div className="glass-card p-2 aspect-video relative group overflow-hidden">
-                    {settings ? (
-                      <iframe
-                        key={settings.youtubeVideoId}
-                        className="w-full h-full rounded-xl"
-                        src={`https://www.youtube.com/embed/${settings.youtubeVideoId}?autoplay=0&controls=1&rel=0`}
-                        title="YouTube video player"
-                        frameBorder="0"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                      ></iframe>
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-white/5 rounded-xl animate-pulse">
-                        <Play size={48} className="text-white/20" />
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div className="glass-card p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-orange-500/20 rounded-lg text-orange-500">
-                          <Play size={24} />
-                        </div>
-                        <h2 className="text-2xl font-black uppercase tracking-tight">Today's Mission</h2>
-                      </div>
-                      {currentUser?.email === ADMIN_EMAIL && (
-                        <button 
-                          onClick={() => setActiveTab('admin')}
-                          className="px-4 py-2 glass-card border-orange-500/30 text-orange-500 text-[10px] font-black uppercase tracking-widest hover:bg-orange-500/10 transition-colors"
-                        >
-                          Manage Drop
-                        </button>
-                      )}
-                    </div>
-                    <p className="text-slate-400 leading-relaxed mb-6">
-                      Watch the clip carefully. Find the secret color flashing on the screen to verify your view. 
-                      Verification rewards are distributed instantly upon correct selection.
-                    </p>
-                    
-                    <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 flex gap-4 items-start">
-                      <AlertTriangle className="text-amber-500 shrink-0" size={20} />
-                      <div>
-                        <p className="text-sm font-bold text-amber-500 uppercase tracking-wider mb-1">Anti-Cheat Active</p>
-                        <p className="text-xs text-amber-200/70">
-                          Fast-forwarding or playing at 2x speed will permanently lock today's reward. 
-                          Our system monitors playback velocity in real-time.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right Column: Verification Game */}
-                <div className="flex-1 space-y-6">
-                  <div className="glass-card p-8 text-center relative overflow-hidden">
-                    {!currentUser && (
-                      <div className="absolute inset-0 z-20 bg-[#05050a]/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
-                        <div className="p-4 bg-orange-500/20 rounded-full text-orange-500 mb-4">
-                          <Lock size={32} />
-                        </div>
-                        <h4 className="text-xl font-black uppercase tracking-tight mb-2">Locked</h4>
-                        <p className="text-sm text-slate-400 mb-6">Please Sign In to earn points and verify your watch time.</p>
-                        <button 
-                          onClick={handleSignIn}
-                          className="px-8 py-3 bg-orange-500 rounded-xl font-black uppercase tracking-widest text-xs hover:scale-105 transition-transform shadow-lg shadow-orange-500/20"
-                        >
-                          Connect Account
-                        </button>
-                      </div>
-                    )}
-                    <h3 className="text-xl font-black uppercase tracking-widest mb-2">Verification</h3>
-                    <p className={`text-sm font-bold uppercase tracking-widest mb-8 ${
-                      verificationState === 'idle' ? 'text-slate-500' : 
-                      verificationState === 'success' ? 'text-emerald-500' : 
-                      verificationState === 'claimed' ? 'text-amber-500' : 'text-rose-500'
-                    }`}>
-                      {verificationState === 'idle' && 'Select the Hidden Color'}
-                      {verificationState === 'success' && 'Verification Successful!'}
-                      {verificationState === 'claimed' && 'Reward Already Claimed'}
-                      {verificationState === 'fail' && 'Incorrect Selection!'}
-                    </p>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      {COLORS.map((btn) => (
-                        <motion.button
-                          key={btn.name}
-                          whileHover={{ scale: verificationState === 'idle' ? 1.05 : 1 }}
-                          whileTap={{ scale: verificationState === 'idle' ? 0.95 : 1 }}
-                          disabled={verificationState !== 'idle'}
-                          onClick={() => handleVerify(btn.name)}
-                          className={`glass-card p-6 flex flex-col items-center gap-4 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${btn.shadow} ${
-                            (verificationState === 'success' || verificationState === 'claimed') && btn.name === settings?.correctColor ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
-                          }`}
-                        >
-                          <div className={`w-10 h-10 rounded-full ${btn.color} shadow-lg shadow-black/50`} />
-                          <span className="text-xs font-black uppercase tracking-tighter">{btn.name}</span>
-                        </motion.button>
-                      ))}
-                    </div>
-
-                    {verificationState === 'claimed' && (
-                      <motion.div 
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="mt-8 p-4 glass-card border-amber-500/30 bg-amber-500/10 flex items-center justify-center gap-3"
-                      >
-                        <AlertTriangle className="text-amber-500" />
-                        <span className="font-bold text-amber-400 uppercase tracking-widest text-xs">Reward Already Claimed</span>
-                      </motion.div>
-                    )}
-
-                    {verificationState === 'success' && (
-                      <motion.div 
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="mt-8 p-4 glass-card border-emerald-500/30 bg-emerald-500/10 flex items-center justify-center gap-3"
-                      >
-                        <CheckCircle2 className="text-emerald-500" />
-                        <span className="font-bold text-emerald-400">+50 PTS AWARDED</span>
-                      </motion.div>
-                    )}
-
-                    {verificationState === 'fail' && (
-                      <motion.div 
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="mt-8 p-4 glass-card border-rose-500/30 bg-rose-500/10 flex items-center justify-center gap-3"
-                      >
-                        <XCircle className="text-rose-500" />
-                        <span className="font-bold text-rose-400">ACCESS DENIED</span>
-                      </motion.div>
-                    )}
-                  </div>
-
-                  <div className="glass-card p-6 bg-gradient-to-br from-purple-500/10 to-transparent">
-                    <h4 className="font-black uppercase text-xs tracking-[0.2em] text-purple-400 mb-4">Stats This Session</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                        <p className="text-2xl font-black">{user.verifiedWatchTime}m</p>
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Watch Time</p>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-2xl font-black">{user.claimedVideos.length}</p>
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Drops Claimed</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <MissionBoard 
+                user={user} 
+                currentUser={currentUser} 
+                onRewardClaimed={handleRewardClaimed} 
+              />
             </motion.div>
           )}
 
@@ -1117,8 +1494,6 @@ function ViewVibeApp() {
           {activeTab === 'admin' && (
             <AdminDashboard 
               currentUser={currentUser} 
-              currentSettings={settings} 
-              onUpdate={setSettings} 
             />
           )}
         </AnimatePresence>
