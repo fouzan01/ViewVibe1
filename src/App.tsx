@@ -891,7 +891,7 @@ function ViewVibeApp() {
   const [user, setUser] = useState<UserData>(INITIAL_USER_DATA);
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [history, setHistory] = useState<Transaction[]>(INITIAL_HISTORY);
+  const [history, setHistory] = useState<Transaction[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('missionBoard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [leaderboardType, setLeaderboardType] = useState<'watchers' | 'promoters'>('watchers');
@@ -906,17 +906,28 @@ function ViewVibeApp() {
 
   // --- Auth & Firestore Sync ---
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+    let userUnsubscribe: (() => void) | null = null;
+    let historyUnsubscribe: (() => void) | null = null;
+
+    const authUnsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       setCurrentUser(fbUser);
 
+      // Clean up previous listeners
+      if (userUnsubscribe) userUnsubscribe();
+      if (historyUnsubscribe) historyUnsubscribe();
+
       if (fbUser) {
+        console.log("Auth state changed: User logged in", fbUser.uid);
         const userDocRef = doc(db, 'users', fbUser.uid);
         try {
           const userDoc = await getDoc(userDocRef);
           if (!userDoc.exists()) {
+            console.log("User document does not exist, creating new one...");
+            // Ensure we have a valid email for the security rules
+            const email = fbUser.email || `${fbUser.uid}@viewvibe.internal`;
             const newUserData: UserData = {
               displayName: fbUser.displayName || 'Anonymous',
-              email: fbUser.email || '',
+              email: email,
               wallet: 0,
               verifiedWatchTime: 0,
               referrals: 0,
@@ -924,37 +935,53 @@ function ViewVibeApp() {
               activeMissionId: null,
             };
             await setDoc(userDocRef, newUserData);
+            console.log("New user document created in Firestore for UID:", fbUser.uid);
+          } else {
+            console.log("User document already exists for UID:", fbUser.uid);
           }
-          // Only set auth ready after we've ensured the user document exists
+
+          // Set up listeners
+          userUnsubscribe = onSnapshot(userDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+              setUser(docSnap.data() as UserData);
+            }
+          }, (error) => {
+            handleFirestoreError(error, OperationType.GET, `users/${fbUser.uid}`);
+          });
+
+          const historyQuery = query(
+            collection(db, 'transactions'),
+            where('userId', '==', fbUser.uid),
+            orderBy('createdAt', 'desc')
+          );
+          historyUnsubscribe = onSnapshot(historyQuery, (snapshot) => {
+            const txs = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            } as Transaction));
+            setHistory(txs);
+          }, (error) => {
+            handleFirestoreError(error, OperationType.LIST, 'transactions');
+          });
+
           setIsAuthReady(true);
         } catch (error) {
-          handleFirestoreError(error, OperationType.WRITE, `users/${fbUser.uid}`);
-          // Still set auth ready so the app doesn't hang, but the error will be caught
+          console.error("Auth sync error:", error);
           setIsAuthReady(true);
         }
       } else {
         setUser(INITIAL_USER_DATA);
+        setHistory(INITIAL_HISTORY); // Show mock history for guests
         setIsAuthReady(true);
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      authUnsubscribe();
+      if (userUnsubscribe) userUnsubscribe();
+      if (historyUnsubscribe) historyUnsubscribe();
+    };
   }, []);
-
-  useEffect(() => {
-    if (!currentUser || !isAuthReady) return;
-
-    const userDocRef = doc(db, 'users', currentUser.uid);
-    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setUser(docSnap.data() as UserData);
-      }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `users/${currentUser.uid}`);
-    });
-
-    return () => unsubscribe();
-  }, [currentUser, isAuthReady]);
 
   // Test Connection
   useEffect(() => {
@@ -1006,14 +1033,15 @@ function ViewVibeApp() {
         claimedVideos: arrayUnion(videoId)
       });
 
-      const newTx: Transaction = {
-        id: Date.now().toString(),
+      // 2. Add transaction record
+      await addDoc(collection(db, 'transactions'), {
+        userId: currentUser.uid,
         type: 'earn',
         amount: points,
         note: `Mission Accomplished: ${videoId}`,
-        date: new Date().toISOString().split('T')[0]
-      };
-      setHistory(prev => [newTx, ...prev]);
+        date: new Date().toISOString().split('T')[0],
+        createdAt: serverTimestamp()
+      });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
     } finally {
@@ -1053,15 +1081,15 @@ function ViewVibeApp() {
         createdAt: serverTimestamp()
       });
 
-      // 3. Add to local history
-      const newTx: Transaction = {
-        id: Date.now().toString(),
+      // 3. Add transaction record
+      await addDoc(collection(db, 'transactions'), {
+        userId: currentUser.uid,
         type: 'spend',
         amount: item.cost,
         note: `Redeemed: ${item.name}`,
-        date: new Date().toISOString().split('T')[0]
-      };
-      setHistory(prev => [newTx, ...prev]);
+        date: new Date().toISOString().split('T')[0],
+        createdAt: serverTimestamp()
+      });
 
       console.log("Reward Claimed! The admin has been notified.");
     } catch (error) {

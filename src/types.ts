@@ -14,6 +14,7 @@ export interface Transaction {
   amount: number;
   note: string;
   date: string;
+  createdAt?: any;
 }
 
 export type ActiveTab = 'missionBoard' | 'leaderboard' | 'wallet' | 'referrals' | 'admin';
