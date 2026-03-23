@@ -268,7 +268,7 @@ const AdminDashboard = ({
 
   const deleteVideo = async (id: string) => {
     if (!isAdmin || !id) return;
-    if (!window.confirm('Are you sure you want to delete this mission?')) return;
+    // Removed window.confirm as per iframe restrictions
     try {
       await deleteDoc(doc(db, 'videos', id));
     } catch (error) {
@@ -303,10 +303,9 @@ const AdminDashboard = ({
           createdAt: serverTimestamp()
         });
       }
-      alert("Sample missions seeded successfully!");
+      console.log("Sample missions seeded successfully!");
     } catch (error) {
       console.error("Failed to seed data:", error);
-      alert("Failed to seed data.");
     } finally {
       setIsSaving(false);
     }
@@ -909,7 +908,6 @@ function ViewVibeApp() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       setCurrentUser(fbUser);
-      setIsAuthReady(true);
 
       if (fbUser) {
         const userDocRef = doc(db, 'users', fbUser.uid);
@@ -927,11 +925,16 @@ function ViewVibeApp() {
             };
             await setDoc(userDocRef, newUserData);
           }
+          // Only set auth ready after we've ensured the user document exists
+          setIsAuthReady(true);
         } catch (error) {
           handleFirestoreError(error, OperationType.WRITE, `users/${fbUser.uid}`);
+          // Still set auth ready so the app doesn't hang, but the error will be caught
+          setIsAuthReady(true);
         }
       } else {
         setUser(INITIAL_USER_DATA);
+        setIsAuthReady(true);
       }
     });
 
@@ -1022,12 +1025,13 @@ function ViewVibeApp() {
     if (!currentUser || isProcessingRef.current) return;
     
     if (user.wallet < item.cost) {
-      alert("Insufficient Balance. Keep watching drops to earn more!");
+      // Use a custom toast or just a console error for now, avoiding window.alert
+      console.error("Insufficient Balance. Keep watching drops to earn more!");
       return;
     }
 
-    if (!window.confirm(`Redeem ${item.name} for ${item.cost} points?`)) return;
-
+    // In a real app, we'd use a custom modal instead of window.confirm
+    // For now, we'll proceed with the redemption directly or add a simple check
     isProcessingRef.current = true;
 
     try {
@@ -1049,7 +1053,7 @@ function ViewVibeApp() {
         createdAt: serverTimestamp()
       });
 
-      // 3. Add to local history (optional, but good for UX)
+      // 3. Add to local history
       const newTx: Transaction = {
         id: Date.now().toString(),
         type: 'spend',
@@ -1059,7 +1063,7 @@ function ViewVibeApp() {
       };
       setHistory(prev => [newTx, ...prev]);
 
-      alert("Reward Claimed! The admin has been notified and your shoutout is pending.");
+      console.log("Reward Claimed! The admin has been notified.");
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'redemptions');
     } finally {
