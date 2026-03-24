@@ -529,11 +529,13 @@ const AdminDashboard = ({
 const MissionBoard = ({ 
   user, 
   currentUser, 
-  onRewardClaimed 
+  onRewardClaimed,
+  showToast
 }: { 
   user: UserData, 
   currentUser: FirebaseUser | null,
-  onRewardClaimed: (videoId: string, points: number) => void
+  onRewardClaimed: (videoId: string, points: number) => void,
+  showToast: (message: string, type: 'success' | 'error') => void
 }) => {
   const [videos, setVideos] = useState<Video[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -618,6 +620,17 @@ const MissionBoard = ({
     if (!currentUser || isProcessingRef.current || !selectedVideo) return;
     if (verificationState !== 'idle') return;
     
+    // INFINITE POINTS EXPLOIT FIX: Check if already claimed before verifying
+    if (user.claimedVideos?.includes(selectedVideo.youtubeVideoId)) {
+      setVerificationState('fail');
+      showToast('You have already claimed this drop!', 'error');
+      setTimeout(() => {
+        setVerificationState('idle');
+        isProcessingRef.current = false;
+      }, 2000);
+      return;
+    }
+
     isProcessingRef.current = true;
 
     if (color === selectedVideo.correctColor) {
@@ -897,6 +910,13 @@ function ViewVibeApp() {
   const [leaderboardType, setLeaderboardType] = useState<'watchers' | 'promoters'>('watchers');
   const isProcessingRef = React.useRef(false);
 
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   // --- Routing ---
   useEffect(() => {
     if (window.location.pathname === '/admin') {
@@ -933,6 +953,7 @@ function ViewVibeApp() {
               referrals: 0,
               claimedVideos: [],
               activeMissionId: null,
+              createdAt: serverTimestamp(),
             };
             await setDoc(userDocRef, newUserData);
             console.log("New user document created in Firestore for UID:", fbUser.uid);
@@ -1000,9 +1021,31 @@ function ViewVibeApp() {
   // --- Actions ---
   const handleSignIn = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
+      
+      // GHOST USER BUG FIX: Immediate check/create on login
+      const userDocRef = doc(db, 'users', user.uid);
+      const userDoc = await getDoc(userDocRef);
+      
+      if (!userDoc.exists()) {
+        const email = user.email || `${user.uid}@viewvibe.internal`;
+        const newUserData: UserData = {
+          displayName: user.displayName || 'Anonymous',
+          email: email,
+          wallet: 0,
+          verifiedWatchTime: 0,
+          referrals: 0,
+          claimedVideos: [],
+          activeMissionId: null,
+          createdAt: serverTimestamp(),
+        };
+        await setDoc(userDocRef, newUserData);
+        console.log("New user document created in Firestore for UID:", user.uid);
+      }
     } catch (error) {
       console.error('Sign in error:', error);
+      showToast('Login failed. Please try again.', 'error');
     }
   };
 
@@ -1019,8 +1062,9 @@ function ViewVibeApp() {
     
     isProcessingRef.current = true;
 
-    // Check if already claimed
+    // INFINITE POINTS EXPLOIT FIX: Check if already claimed
     if (user.claimedVideos?.includes(videoId)) {
+      showToast('You have already claimed this drop!', 'error');
       isProcessingRef.current = false;
       return;
     }
@@ -1042,8 +1086,11 @@ function ViewVibeApp() {
         date: new Date().toISOString().split('T')[0],
         createdAt: serverTimestamp()
       });
+      
+      showToast(`+${points} Points Earned!`, 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
+      showToast('Failed to claim reward.', 'error');
     } finally {
       isProcessingRef.current = false;
     }
@@ -1132,6 +1179,25 @@ function ViewVibeApp() {
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row relative">
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: 50, x: '-50%' }}
+            className={`fixed bottom-8 left-1/2 z-[100] px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs shadow-2xl flex items-center gap-3 border ${
+              toast.type === 'success' 
+                ? 'bg-emerald-500/90 text-white border-emerald-400' 
+                : 'bg-rose-500/90 text-white border-rose-400'
+            }`}
+          >
+            {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Background Orbs */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
         <div className="absolute -top-24 -left-24 w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[120px]" />
@@ -1281,6 +1347,7 @@ function ViewVibeApp() {
                 user={user} 
                 currentUser={currentUser} 
                 onRewardClaimed={handleRewardClaimed} 
+                showToast={showToast}
               />
             </motion.div>
           )}

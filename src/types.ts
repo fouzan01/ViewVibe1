@@ -6,6 +6,7 @@ export interface UserData {
   referrals: number;
   claimedVideos: string[];
   activeMissionId?: string | null;
+  createdAt?: any;
 }
 
 export interface Transaction {

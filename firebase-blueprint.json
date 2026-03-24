@@ -41,6 +41,20 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "When the redemption occurred" }
       },
       "required": ["userId", "userEmail", "displayName", "rewardName", "cost", "status", "createdAt"]
+    },
+    "Transaction": {
+      "title": "User Transaction",
+      "description": "Stores point earnings and spendings.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "UID of the user" },
+        "type": { "type": "string", "enum": ["earn", "spend"], "description": "Type of transaction" },
+        "amount": { "type": "number", "description": "Amount of points" },
+        "note": { "type": "string", "description": "Description of the transaction" },
+        "date": { "type": "string", "description": "ISO date string (YYYY-MM-DD)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Firestore server timestamp" }
+      },
+      "required": ["userId", "type", "amount", "note", "date", "createdAt"]
     }
   },
   "firestore": {
@@ -55,6 +69,10 @@
     "/redemptions/{redemptionId}": {
       "schema": "Redemption",
       "description": "Collection of reward redemption requests."
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Collection of user point transactions."
     }
   }
 }

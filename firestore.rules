@@ -39,7 +39,9 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() && (request.auth.token.email == "fouzan1605@gmail.com" && request.auth.token.email_verified == true);
+      return isAuthenticated() && 
+             (request.auth.token.email == "fouzan1605@gmail.com" || 
+              request.auth.uid == "3pRku579TrdPPV1nTzdsCJzWvYr2");
     }
 
     function isValidEmail(email) {
@@ -48,13 +50,14 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return data.keys().hasAll(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos']) &&
-             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'activeMissionId']) &&
+             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'activeMissionId', 'createdAt']) &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
              isValidEmail(data.email) &&
              data.wallet is number && data.wallet >= 0 &&
              data.verifiedWatchTime is number && data.verifiedWatchTime >= 0 &&
              data.referrals is number && data.referrals >= 0 &&
              data.claimedVideos is list &&
+             (!('createdAt' in data) || data.createdAt is timestamp) &&
              (!('activeMissionId' in data) || data.activeMissionId == null || data.activeMissionId is string);
     }
 
@@ -97,7 +100,7 @@ service cloud.firestore {
     }
 
     match /transactions/{transactionId} {
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
     }
 
