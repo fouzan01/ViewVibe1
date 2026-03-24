@@ -53,6 +53,7 @@ import {
   addDoc,
   query,
   orderBy,
+  limit,
   deleteDoc,
   where,
   serverTimestamp
@@ -721,11 +722,13 @@ const MissionBoard = ({
   user, 
   currentUser, 
   onRewardClaimed,
+  recentPayouts,
   showToast
 }: { 
   user: UserData, 
   currentUser: FirebaseUser | null,
   onRewardClaimed: (videoId: string, points: number) => void,
+  recentPayouts: Redemption[],
   showToast: (message: string, type: 'success' | 'error') => void
 }) => {
   const [videos, setVideos] = useState<Video[]>([]);
@@ -733,29 +736,7 @@ const MissionBoard = ({
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail' | 'claimed'>('idle');
   const [watchTimer, setWatchTimer] = useState(0);
-  const [recentPayouts, setRecentPayouts] = useState<Redemption[]>([]);
   const isProcessingRef = React.useRef(false);
-
-  useEffect(() => {
-    const pQuery = query(
-      collection(db, 'redemptions'),
-      where('status', '==', 'Completed')
-    );
-    const unsubscribe = onSnapshot(pQuery, (snapshot) => {
-      const pList = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as Redemption))
-        .sort((a, b) => {
-          const timeA = a.completedAt?.toMillis?.() || 0;
-          const timeB = b.completedAt?.toMillis?.() || 0;
-          return timeB - timeA;
-        })
-        .slice(0, 5);
-      setRecentPayouts(pList);
-    }, (error) => {
-      console.error("Recent payouts fetch error:", error);
-    });
-    return () => unsubscribe();
-  }, []);
 
   useEffect(() => {
     const vQuery = query(collection(db, 'videos'));
@@ -1161,6 +1142,7 @@ function ViewVibeApp() {
   const [leaderboardType, setLeaderboardType] = useState<'watchers' | 'promoters'>('watchers');
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [isRewardsLoading, setIsRewardsLoading] = useState(true);
+  const [recentPayouts, setRecentPayouts] = useState<Redemption[]>([]);
   const isProcessingRef = React.useRef(false);
 
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -1184,12 +1166,70 @@ function ViewVibeApp() {
     return () => unsubscribe();
   }, []);
 
-  // --- Routing ---
+  // --- Live Activity Sync ---
+  useEffect(() => {
+    const pQuery = query(
+      collection(db, 'redemptions'),
+      where('status', '==', 'Completed')
+    );
+    const unsubscribe = onSnapshot(pQuery, (snapshot) => {
+      const pList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Redemption))
+        .sort((a, b) => {
+          const timeA = a.completedAt?.toMillis?.() || 0;
+          const timeB = b.completedAt?.toMillis?.() || 0;
+          return timeB - timeA;
+        })
+        .slice(0, 5);
+      setRecentPayouts(pList);
+    }, (error) => {
+      console.error("Recent payouts fetch error:", error);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- Routing & Referrals ---
   useEffect(() => {
     if (window.location.pathname === '/admin') {
       setActiveTab('admin');
     }
+
+    // Capture Referral Code
+    const params = new URLSearchParams(window.location.search);
+    const refCode = params.get('ref');
+    if (refCode) {
+      localStorage.setItem('referralCode', refCode);
+      console.log("Referral code captured:", refCode);
+    }
   }, []);
+
+  // --- Leaderboard Sync ---
+  const [topUsers, setTopUsers] = useState<any[]>([]);
+  const [userRank, setUserRank] = useState<number | null>(null);
+
+  useEffect(() => {
+    const q = query(collection(db, 'users'), orderBy('wallet', 'desc'), limit(10));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const users = snapshot.docs.map((doc, index) => ({
+        id: doc.id,
+        rank: index + 1,
+        ...doc.data()
+      }));
+      setTopUsers(users);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    
+    // To get the actual rank, we count how many users have more points
+    const q = query(collection(db, 'users'), where('wallet', '>', user.wallet));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setUserRank(snapshot.size + 1);
+    });
+    return () => unsubscribe();
+  }, [currentUser, user.wallet]);
 
   // --- Auth & Firestore Sync ---
   useEffect(() => {
@@ -1294,18 +1334,50 @@ function ViewVibeApp() {
   const handleSignIn = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
+      const fbUser = result.user;
       
-      // GHOST USER BUG FIX: Immediate check/create on login
-      const userDocRef = doc(db, 'users', user.uid);
+      const userDocRef = doc(db, 'users', fbUser.uid);
       const userDoc = await getDoc(userDocRef);
       
       if (!userDoc.exists()) {
-        const email = user.email || `${user.uid}@viewvibe.internal`;
+        const refCode = localStorage.getItem('referralCode');
+        const email = fbUser.email || `${fbUser.uid}@viewvibe.internal`;
+        
+        let initialWallet = 0;
+        if (refCode && refCode !== fbUser.uid) {
+          initialWallet = 100; // Starting bonus
+          
+          // Reward the referrer
+          try {
+            const referrerRef = doc(db, 'users', refCode);
+            const referrerDoc = await getDoc(referrerRef);
+            if (referrerDoc.exists()) {
+              await updateDoc(referrerRef, {
+                wallet: increment(500),
+                referrals: increment(1)
+              });
+              
+              // Add transaction for referrer
+              await addDoc(collection(db, 'transactions'), {
+                userId: refCode,
+                type: 'earn',
+                amount: 500,
+                note: `Referral Bonus: ${fbUser.displayName || 'New User'}`,
+                date: new Date().toISOString().split('T')[0],
+                createdAt: serverTimestamp()
+              });
+            }
+          } catch (e) {
+            console.error("Referral reward failed:", e);
+          }
+          
+          localStorage.removeItem('referralCode');
+        }
+
         const newUserData: UserData = {
-          displayName: user.displayName || 'Anonymous',
+          displayName: fbUser.displayName || 'Anonymous',
           email: email,
-          wallet: 0,
+          wallet: initialWallet,
           verifiedWatchTime: 0,
           referrals: 0,
           claimedVideos: [],
@@ -1313,7 +1385,20 @@ function ViewVibeApp() {
           createdAt: serverTimestamp(),
         };
         await setDoc(userDocRef, newUserData);
-        console.log("New user document created in Firestore for UID:", user.uid);
+        
+        if (initialWallet > 0) {
+          // Add transaction for new user
+          await addDoc(collection(db, 'transactions'), {
+            userId: fbUser.uid,
+            type: 'earn',
+            amount: 100,
+            note: 'Welcome Bonus (Referral)',
+            date: new Date().toISOString().split('T')[0],
+            createdAt: serverTimestamp()
+          });
+        }
+        
+        console.log("New user document created in Firestore for UID:", fbUser.uid);
       }
     } catch (error) {
       console.error('Sign in error:', error);
@@ -1417,8 +1502,11 @@ function ViewVibeApp() {
   };
 
   const copyReferral = () => {
-    navigator.clipboard.writeText('viewvibe.com/join?ref=guest99');
-    // In a real app, we'd show a toast here
+    if (!currentUser) return;
+    // Use the Netlify domain as requested by the user for the working link
+    const refLink = `https://viewvibeus.netlify.app/?ref=${currentUser.uid}`;
+    navigator.clipboard.writeText(refLink);
+    showToast('Referral link copied!', 'success');
   };
 
   if (!isAuthReady) {
@@ -1617,6 +1705,7 @@ function ViewVibeApp() {
                 user={user} 
                 currentUser={currentUser} 
                 onRewardClaimed={handleRewardClaimed} 
+                recentPayouts={recentPayouts}
                 showToast={showToast}
               />
             </motion.div>
@@ -1628,71 +1717,181 @@ function ViewVibeApp() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="max-w-4xl mx-auto"
+              className="max-w-4xl mx-auto space-y-12"
             >
-              <div className="flex flex-col items-center mb-12">
-                <h2 className="text-4xl font-black uppercase tracking-tighter mb-6">Hall of Fame</h2>
-                <div className="flex p-1 glass-card rounded-full bg-white/5">
-                  <button
-                    onClick={() => setLeaderboardType('watchers')}
-                    className={`px-8 py-2 rounded-full text-sm font-bold transition-all duration-300 ${
-                      leaderboardType === 'watchers' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Top Watchers
-                  </button>
-                  <button
-                    onClick={() => setLeaderboardType('promoters')}
-                    className={`px-8 py-2 rounded-full text-sm font-bold transition-all duration-300 ${
-                      leaderboardType === 'promoters' ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Top Promoters
-                  </button>
+              <div className="text-center space-y-4">
+                <h2 className="text-5xl font-black uppercase tracking-tighter">Hall of Fame</h2>
+                <p className="text-slate-400 max-w-xl mx-auto">
+                  The elite watchers of ViewVibe. Climb the ranks by completing drops and building your empire.
+                </p>
+              </div>
+
+              {/* Hype Engine - Dynamic Motivation */}
+              <div className="glass-card p-8 bg-gradient-to-r from-orange-600/20 to-purple-600/20 border-orange-500/30">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-4 bg-orange-500 rounded-2xl shadow-lg shadow-orange-500/40">
+                      <Trophy className="text-white" size={32} />
+                    </div>
+                    <div>
+                      <h3 className="text-2xl font-black uppercase tracking-tight">Hype Engine</h3>
+                      <p className="text-orange-400 font-bold text-sm uppercase tracking-widest">
+                        {userRank === 1 ? "🏆 YOU ARE THE CHAMPION!" : 
+                         userRank && userRank <= 10 ? "🔥 YOU'RE IN THE ELITE TOP 10!" : 
+                         "🚀 CLIMBING THE RANKS"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-center md:text-right">
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Status Report</p>
+                    <p className="text-lg font-black text-white italic">
+                      {userRank === 1 ? "Defend your throne, legend." : 
+                       topUsers.length > 0 && userRank ? (
+                         userRank <= 10 ? (
+                           `Only ${(topUsers[userRank - 2]?.wallet - user.wallet).toLocaleString()} pts to Rank #${userRank - 1}`
+                         ) : (
+                           `Need ${(topUsers[9]?.wallet - user.wallet).toLocaleString()} pts to enter Top 10 (${Math.ceil((topUsers[9]?.wallet - user.wallet) / 50)} drops)`
+                         )
+                       ) : "Loading your destiny..."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Live Activity Feed for Social Proof */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Activity className="text-emerald-500" size={18} />
+                  <h4 className="text-xs font-black uppercase tracking-[0.3em] text-slate-500">Live Social Proof</h4>
+                </div>
+                <div className="flex gap-4 overflow-x-auto pb-2 no-scrollbar">
+                  {recentPayouts.map((p) => (
+                    <div key={p.id} className="flex-shrink-0 glass-card px-4 py-2 bg-white/5 flex items-center gap-3 border-emerald-500/10">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[10px] font-bold whitespace-nowrap">
+                        <span className="text-emerald-400">{p.displayName}</span> just claimed <span className="text-orange-400">{p.rewardName}</span>
+                      </span>
+                    </div>
+                  ))}
+                  {recentPayouts.length === 0 && (
+                    <p className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Awaiting live activity...</p>
+                  )}
                 </div>
               </div>
 
               <div className="space-y-4">
-                {(leaderboardType === 'watchers' ? WATCHERS_LEADERBOARD : PROMOTERS_LEADERBOARD).map((item) => {
+                {topUsers.map((item) => {
                   const isTop3 = item.rank <= 3;
+                  const isCurrentUser = currentUser?.uid === item.id;
                   const rankColors = [
-                    'border-yellow-500/50 bg-yellow-500/5 shadow-[0_0_20px_rgba(234,179,8,0.1)]',
-                    'border-slate-300/50 bg-slate-300/5',
-                    'border-amber-700/50 bg-amber-700/5'
+                    'border-yellow-500/50 bg-yellow-500/10 shadow-[0_0_30px_rgba(234,179,8,0.15)]',
+                    'border-slate-300/50 bg-slate-300/10 shadow-[0_0_30px_rgba(203,213,225,0.1)]',
+                    'border-amber-700/50 bg-amber-700/10 shadow-[0_0_30px_rgba(180,83,9,0.1)]'
                   ];
 
                   return (
                     <motion.div
-                      key={item.name}
+                      key={item.id}
                       initial={{ opacity: 0, x: -20 }}
                       animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: item.rank * 0.1 }}
-                      className={`glass-card p-4 flex items-center gap-6 group hover:bg-white/10 transition-all duration-300 ${isTop3 ? rankColors[item.rank - 1] : ''}`}
+                      transition={{ delay: item.rank * 0.05 }}
+                      className={`glass-card p-5 flex items-center gap-6 group hover:bg-white/10 transition-all duration-300 ${isTop3 ? rankColors[item.rank - 1] : ''} ${isCurrentUser ? 'border-orange-500/50 ring-1 ring-orange-500/20' : ''}`}
                     >
                       <div className="w-12 text-center">
-                        {item.rank === 1 ? <Crown className="text-yellow-500 mx-auto" /> : 
+                        {item.rank === 1 ? <Crown className="text-yellow-500 mx-auto" size={28} /> : 
+                         item.rank === 2 ? <Trophy className="text-slate-300 mx-auto" size={24} /> :
+                         item.rank === 3 ? <Trophy className="text-amber-700 mx-auto" size={24} /> :
                          <span className={`text-xl font-black ${isTop3 ? 'text-white' : 'text-slate-600'}`}>#{item.rank}</span>}
                       </div>
                       
                       <div className="relative">
-                        <img src={item.avatar} alt={item.name} className="w-12 h-12 rounded-full border-2 border-white/10" referrerPolicy="no-referrer" />
-                        {item.rank === 1 && <div className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-500 rounded-full flex items-center justify-center text-[8px] font-bold text-black">1</div>}
+                        <div className="w-14 h-14 rounded-full border-2 border-white/10 overflow-hidden bg-white/5">
+                          <img 
+                            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${item.displayName}`} 
+                            alt={item.displayName} 
+                            className="w-full h-full object-cover" 
+                            referrerPolicy="no-referrer" 
+                          />
+                        </div>
+                        {item.rank === 1 && <div className="absolute -top-1 -right-1 w-5 h-5 bg-yellow-500 rounded-full flex items-center justify-center text-[10px] font-black text-black border-2 border-[#05050a]">1</div>}
                       </div>
 
                       <div className="flex-1">
-                        <h4 className="font-black text-lg group-hover:text-orange-400 transition-colors">{item.name}</h4>
-                        <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Elite Member</p>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-lg group-hover:text-orange-400 transition-colors">{item.displayName}</h4>
+                          {isCurrentUser && <span className="px-2 py-0.5 bg-orange-500 text-[8px] font-black text-white rounded-full uppercase tracking-tighter">You</span>}
+                        </div>
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+                          {item.rank === 1 ? 'Undisputed Champion' : item.rank <= 3 ? 'Elite Legend' : 'Rising Star'}
+                        </p>
                       </div>
 
                       <div className="text-right">
-                        <p className={`text-xl font-black ${item.rank === 1 ? 'text-yellow-500' : 'text-white'}`}>{item.value}</p>
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                          {leaderboardType === 'watchers' ? 'Verified Time' : 'Total Referrals'}
-                        </p>
+                        <p className={`text-2xl font-black ${item.rank === 1 ? 'text-yellow-500' : 'text-white'}`}>{item.wallet.toLocaleString()}</p>
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Points</p>
                       </div>
                     </motion.div>
                   );
                 })}
+
+                {/* Current User Pinned Rank (if not in top 10) */}
+                {currentUser && userRank && userRank > 10 && (
+                  <>
+                    <div className="py-4 flex items-center justify-center">
+                      <div className="h-px flex-1 bg-gradient-to-r from-transparent to-white/10" />
+                      <div className="px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">Your Position</div>
+                      <div className="h-px flex-1 bg-gradient-to-l from-transparent to-white/10" />
+                    </div>
+                    
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="glass-card p-5 flex items-center gap-6 border-orange-500/30 bg-orange-500/5 ring-1 ring-orange-500/10"
+                    >
+                      <div className="w-12 text-center">
+                        <span className="text-xl font-black text-orange-500">#{userRank}</span>
+                      </div>
+                      
+                      <div className="relative">
+                        <div className="w-14 h-14 rounded-full border-2 border-orange-500/20 overflow-hidden bg-white/5">
+                          <img 
+                            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${user.displayName}`} 
+                            alt={user.displayName} 
+                            className="w-full h-full object-cover" 
+                            referrerPolicy="no-referrer" 
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-lg text-white">{user.displayName}</h4>
+                          <span className="px-2 py-0.5 bg-orange-500 text-[8px] font-black text-white rounded-full uppercase tracking-tighter">You</span>
+                        </div>
+                        <p className="text-xs font-bold text-orange-500/70 uppercase tracking-widest">
+                          {userRank === 1 ? '👑 You are the undisputed champion! Keep your lead!' : 
+                           userRank <= 10 ? `🔥 You are only ${(topUsers[userRank - 2]?.wallet - user.wallet).toLocaleString()} points away from stealing the #${userRank - 1} spot from ${topUsers[userRank - 2]?.displayName}!` :
+                           `🚀 You are ${(topUsers[9]?.wallet - user.wallet).toLocaleString()} points away from breaking into the Elite Top 10! Complete ${Math.ceil((topUsers[9]?.wallet - user.wallet) / 50)} more drops to get there!`}
+                        </p>
+                      </div>
+
+                      <div className="text-right">
+                        <p className="text-2xl font-black text-white">{user.wallet.toLocaleString()}</p>
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Points</p>
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+                
+                {/* Hype Engine for Top 10 users */}
+                {currentUser && userRank && userRank <= 10 && (
+                  <div className="mt-8 p-6 glass-card border-orange-500/20 bg-orange-500/5 text-center">
+                    <p className="text-sm font-bold text-white italic">
+                      {userRank === 1 ? "👑 You are the undisputed champion! Keep your lead!" : 
+                       `🔥 You are only ${(topUsers[userRank - 2]?.wallet - user.wallet).toLocaleString()} points away from stealing the #${userRank - 1} spot from ${topUsers[userRank - 2]?.displayName}!`}
+                    </p>
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
@@ -1822,14 +2021,21 @@ function ViewVibeApp() {
                 <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-4">Your Unique Referral Link</p>
                 <div className="flex flex-col md:flex-row gap-4">
                   <div className="flex-1 glass-card bg-black/40 border-white/10 p-4 flex items-center justify-between">
-                    <code className="text-orange-400 font-mono">viewvibe.com/join?ref=guest99</code>
-                    <button onClick={copyReferral} className="p-2 hover:bg-white/10 rounded-lg transition-colors text-slate-400 hover:text-white">
+                    <code className="text-orange-400 font-mono truncate mr-4">
+                      {currentUser ? `viewvibeus.netlify.app/?ref=${currentUser.uid}` : 'Sign in to get your link'}
+                    </code>
+                    <button 
+                      onClick={copyReferral} 
+                      disabled={!currentUser}
+                      className="p-2 hover:bg-white/10 rounded-lg transition-colors text-slate-400 hover:text-white disabled:opacity-50"
+                    >
                       <Copy size={18} />
                     </button>
                   </div>
                   <button 
                     onClick={copyReferral}
-                    className="px-8 py-4 bg-orange-500 hover:bg-orange-600 text-white font-black uppercase tracking-widest rounded-xl transition-all duration-300 hover:scale-105 shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2"
+                    disabled={!currentUser}
+                    className="px-8 py-4 bg-orange-500 hover:bg-orange-600 text-white font-black uppercase tracking-widest rounded-xl transition-all duration-300 hover:scale-105 shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:hover:scale-100"
                   >
                     <Copy size={18} />
                     Copy Link
@@ -1841,7 +2047,7 @@ function ViewVibeApp() {
                 {[
                   { step: '01', title: 'Share Link', desc: 'Send your referral link to friends or share on socials.' },
                   { step: '02', title: 'They Join', desc: 'Friends sign up and complete their first Daily Drop.' },
-                  { step: '03', title: 'Earn Points', desc: 'Instantly receive 100 points per verified referral.' }
+                  { step: '03', title: 'Earn Points', desc: 'Instantly receive 500 points per verified referral.' }
                 ].map((item) => (
                   <div key={item.step} className="glass-card p-8 relative group overflow-hidden">
                     <div className="absolute -top-4 -right-4 text-6xl font-black text-white/5 group-hover:text-orange-500/10 transition-colors">{item.step}</div>
@@ -1862,7 +2068,7 @@ function ViewVibeApp() {
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Invites</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-4xl font-black text-orange-500">{(user.referrals * 100).toLocaleString()}</p>
+                    <p className="text-4xl font-black text-orange-500">{(user.referrals * 500).toLocaleString()}</p>
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Earned</p>
                   </div>
                 </div>
