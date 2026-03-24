@@ -27,10 +27,12 @@ import {
   Save,
   Trash2,
   EyeOff,
-  Eye
+  Eye,
+  ShoppingBag,
+  Activity
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings, Video, Redemption } from './types';
+import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings, Video, Redemption, Reward } from './types';
 import { auth, db, googleProvider } from './firebase';
 import { 
   signInWithPopup, 
@@ -185,12 +187,16 @@ const AdminDashboard = ({
 }) => {
   const [videoId, setVideoId] = useState('');
   const [color, setColor] = useState('Neon Green');
+  const [rewardTitle, setRewardTitle] = useState('');
+  const [rewardCost, setRewardCost] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [videos, setVideos] = useState<Video[]>([]);
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
+  const [rewards, setRewards] = useState<Reward[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRedemptionsLoading, setIsRedemptionsLoading] = useState(true);
+  const [isRewardsLoading, setIsRewardsLoading] = useState(true);
 
   const isAdmin = currentUser?.email === ADMIN_EMAIL;
 
@@ -218,16 +224,41 @@ const AdminDashboard = ({
     if (!isAdmin) return;
     const rQuery = query(
       collection(db, 'redemptions'), 
-      where('status', '==', 'Pending'),
-      orderBy('createdAt', 'asc')
+      where('status', '==', 'Pending')
     );
     const unsubscribe = onSnapshot(rQuery, (snapshot) => {
-      const rList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Redemption));
+      const rList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Redemption))
+        .sort((a, b) => {
+          const timeA = a.createdAt?.toMillis?.() || 0;
+          const timeB = b.createdAt?.toMillis?.() || 0;
+          return timeA - timeB; // asc
+        });
       setRedemptions(rList);
       setIsRedemptionsLoading(false);
     }, (error) => {
       console.error("Redemptions fetch error:", error);
       setIsRedemptionsLoading(false);
+    });
+    return () => unsubscribe();
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const rwQuery = query(collection(db, 'rewards'));
+    const unsubscribe = onSnapshot(rwQuery, (snapshot) => {
+      const rwList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Reward))
+        .sort((a, b) => {
+          const timeA = a.createdAt?.toMillis?.() || 0;
+          const timeB = b.createdAt?.toMillis?.() || 0;
+          return timeB - timeA;
+        });
+      setRewards(rwList);
+      setIsRewardsLoading(false);
+    }, (error) => {
+      console.error("Rewards fetch error:", error);
+      setIsRewardsLoading(false);
     });
     return () => unsubscribe();
   }, [isAdmin]);
@@ -252,6 +283,45 @@ const AdminDashboard = ({
       setStatus('error');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleCreateReward = async () => {
+    if (!isAdmin || isSaving || !rewardTitle || !rewardCost) return;
+    setIsSaving(true);
+    try {
+      await addDoc(collection(db, 'rewards'), {
+        title: rewardTitle,
+        cost: parseInt(rewardCost),
+        isActive: true,
+        createdAt: serverTimestamp()
+      });
+      setRewardTitle('');
+      setRewardCost('');
+    } catch (error) {
+      console.error("Failed to create reward:", error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const toggleRewardStatus = async (reward: Reward) => {
+    if (!isAdmin || !reward.id) return;
+    try {
+      await updateDoc(doc(db, 'rewards', reward.id), {
+        isActive: !reward.isActive
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `rewards/${reward.id}`);
+    }
+  };
+
+  const deleteReward = async (id: string) => {
+    if (!isAdmin || !id) return;
+    try {
+      await deleteDoc(doc(db, 'rewards', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `rewards/${id}`);
     }
   };
 
@@ -280,7 +350,8 @@ const AdminDashboard = ({
     if (!isAdmin || !id) return;
     try {
       await updateDoc(doc(db, 'redemptions', id), {
-        status: 'Completed'
+        status: 'Completed',
+        completedAt: serverTimestamp()
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `redemptions/${id}`);
@@ -306,6 +377,36 @@ const AdminDashboard = ({
       console.log("Sample missions seeded successfully!");
     } catch (error) {
       console.error("Failed to seed data:", error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const seedSamplePayouts = async () => {
+    if (!isAdmin || isSaving) return;
+    setIsSaving(true);
+    try {
+      const samples = [
+        { displayName: 'CryptoKing', rewardName: 'Litecoin Payout', cost: 5000 },
+        { displayName: 'VibeMaster', rewardName: 'Amazon Gift Card', cost: 2500 },
+        { displayName: 'Alex_99', rewardName: 'Discord Nitro', cost: 1500 },
+        { displayName: 'Sarah_Vibe', rewardName: 'Litecoin Payout', cost: 5000 },
+        { displayName: 'User_404', rewardName: 'Steam Wallet', cost: 3000 }
+      ];
+
+      for (const s of samples) {
+        await addDoc(collection(db, 'redemptions'), {
+          ...s,
+          userId: 'sample-user-id',
+          userEmail: 'sample@example.com',
+          status: 'Completed',
+          createdAt: serverTimestamp(),
+          completedAt: serverTimestamp()
+        });
+      }
+      console.log("Sample payouts seeded successfully!");
+    } catch (error) {
+      console.error("Failed to seed payouts:", error);
     } finally {
       setIsSaving(false);
     }
@@ -405,13 +506,22 @@ const AdminDashboard = ({
             {isSaving ? 'Publishing...' : status === 'success' ? 'Mission Published!' : status === 'error' ? 'Update Failed' : 'Add to Mission Board'}
           </button>
 
-          <button
-            onClick={seedSampleData}
-            disabled={isSaving}
-            className="w-full py-3 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-white/5 transition-all"
-          >
-            Seed Sample Missions
-          </button>
+          <div className="grid grid-cols-2 gap-4">
+            <button
+              onClick={seedSampleData}
+              disabled={isSaving}
+              className="w-full py-3 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-white/5 transition-all"
+            >
+              Seed Missions
+            </button>
+            <button
+              onClick={seedSamplePayouts}
+              disabled={isSaving}
+              className="w-full py-3 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-white/5 transition-all"
+            >
+              Seed Payouts
+            </button>
+          </div>
         </div>
 
         {/* Mission Backlog */}
@@ -461,6 +571,87 @@ const AdminDashboard = ({
                       onClick={() => v.id && deleteVideo(v.id)}
                       className="p-2 text-slate-500 hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
                       title="Delete"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+      
+      {/* Store Management Section */}
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <ShoppingBag className="text-purple-500" />
+          <h3 className="text-2xl font-black uppercase tracking-tight">Store Management</h3>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Create Reward */}
+          <div className="glass-card p-8 space-y-6">
+            <h4 className="text-xs font-black uppercase tracking-[0.2em] text-purple-500">Create New Reward</h4>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Reward Title</label>
+                <input 
+                  type="text"
+                  value={rewardTitle}
+                  onChange={(e) => setRewardTitle(e.target.value)}
+                  placeholder="e.g. Amazon Gift Card"
+                  className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-purple-500 transition-colors"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Cost (Points)</label>
+                <input 
+                  type="number"
+                  value={rewardCost}
+                  onChange={(e) => setRewardCost(e.target.value)}
+                  placeholder="e.g. 5000"
+                  className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-purple-500 transition-colors"
+                />
+              </div>
+              <button
+                onClick={handleCreateReward}
+                disabled={isSaving || !rewardTitle || !rewardCost}
+                className="w-full py-4 bg-purple-500 hover:bg-purple-600 text-white rounded-xl font-black uppercase tracking-widest text-xs transition-all disabled:opacity-50"
+              >
+                {isSaving ? <RefreshCw className="animate-spin mx-auto" size={18} /> : 'Create Reward'}
+              </button>
+            </div>
+          </div>
+
+          {/* Rewards List */}
+          <div className="space-y-4">
+            <h4 className="text-xs font-black uppercase tracking-[0.2em] text-slate-500 px-2">Active Store Items</h4>
+            {isRewardsLoading ? (
+              <div className="flex justify-center py-8">
+                <RefreshCw className="animate-spin text-purple-500" size={24} />
+              </div>
+            ) : rewards.length === 0 ? (
+              <div className="glass-card p-8 text-center text-slate-600 font-bold uppercase tracking-widest text-[10px]">
+                No rewards created yet
+              </div>
+            ) : (
+              rewards.map((r) => (
+                <div key={r.id} className={`glass-card p-4 flex items-center justify-between gap-4 border-l-4 ${r.isActive ? 'border-purple-500' : 'border-slate-700 opacity-60'}`}>
+                  <div>
+                    <h5 className="font-black text-sm">{r.title}</h5>
+                    <p className="text-xs font-bold text-slate-500">{r.cost.toLocaleString()} Points</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => toggleRewardStatus(r)}
+                      className={`p-2 rounded-lg transition-colors ${r.isActive ? 'text-purple-500 hover:bg-purple-500/10' : 'text-slate-500 hover:bg-white/5'}`}
+                    >
+                      {r.isActive ? <Eye size={18} /> : <EyeOff size={18} />}
+                    </button>
+                    <button 
+                      onClick={() => r.id && deleteReward(r.id)}
+                      className="p-2 text-slate-500 hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
                     >
                       <Trash2 size={18} />
                     </button>
@@ -542,7 +733,29 @@ const MissionBoard = ({
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail' | 'claimed'>('idle');
   const [watchTimer, setWatchTimer] = useState(0);
+  const [recentPayouts, setRecentPayouts] = useState<Redemption[]>([]);
   const isProcessingRef = React.useRef(false);
+
+  useEffect(() => {
+    const pQuery = query(
+      collection(db, 'redemptions'),
+      where('status', '==', 'Completed')
+    );
+    const unsubscribe = onSnapshot(pQuery, (snapshot) => {
+      const pList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Redemption))
+        .sort((a, b) => {
+          const timeA = a.completedAt?.toMillis?.() || 0;
+          const timeB = b.completedAt?.toMillis?.() || 0;
+          return timeB - timeA;
+        })
+        .slice(0, 5);
+      setRecentPayouts(pList);
+    }, (error) => {
+      console.error("Recent payouts fetch error:", error);
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const vQuery = query(collection(db, 'videos'));
@@ -682,6 +895,44 @@ const MissionBoard = ({
           <div className="w-px h-8 bg-white/10" />
           <Trophy className="text-orange-500" size={24} />
         </div>
+      </div>
+
+      {/* Recent Payouts Feed */}
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <Activity className="text-orange-500" />
+          <h3 className="text-xl font-black uppercase tracking-tight">Live Activity</h3>
+        </div>
+        {recentPayouts.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {recentPayouts.map((p, idx) => (
+              <motion.div
+                key={p.id}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: idx * 0.1 }}
+                className="glass-card p-4 flex items-center gap-4 bg-emerald-500/5 border-emerald-500/20"
+              >
+                <div className="p-2 bg-emerald-500/20 rounded-full text-emerald-500">
+                  <CheckCircle2 size={16} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-white truncate">
+                    🎉 <span className="text-emerald-400">{p.displayName}</span> redeemed <span className="text-orange-400">{p.rewardName}</span>
+                  </p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mt-1">
+                    for {p.cost.toLocaleString()} pts
+                  </p>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        ) : (
+          <div className="glass-card p-8 text-center border-dashed border-white/10">
+            <p className="text-slate-500 font-black uppercase tracking-widest text-[10px]">Waiting for live activity...</p>
+            <p className="text-slate-600 text-[8px] mt-1">Completed redemptions will appear here in real-time</p>
+          </div>
+        )}
       </div>
 
       <AnimatePresence mode="wait">
@@ -908,6 +1159,8 @@ function ViewVibeApp() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('missionBoard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [leaderboardType, setLeaderboardType] = useState<'watchers' | 'promoters'>('watchers');
+  const [rewards, setRewards] = useState<Reward[]>([]);
+  const [isRewardsLoading, setIsRewardsLoading] = useState(true);
   const isProcessingRef = React.useRef(false);
 
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -916,6 +1169,20 @@ function ViewVibeApp() {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
+
+  // --- Rewards Sync ---
+  useEffect(() => {
+    const rwQuery = query(collection(db, 'rewards'), where('isActive', '==', true));
+    const unsubscribe = onSnapshot(rwQuery, (snapshot) => {
+      const rwList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Reward));
+      setRewards(rwList);
+      setIsRewardsLoading(false);
+    }, (error) => {
+      console.error("Rewards fetch error:", error);
+      setIsRewardsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
 
   // --- Routing ---
   useEffect(() => {
@@ -972,14 +1239,19 @@ function ViewVibeApp() {
 
           const historyQuery = query(
             collection(db, 'transactions'),
-            where('userId', '==', fbUser.uid),
-            orderBy('createdAt', 'desc')
+            where('userId', '==', fbUser.uid)
           );
           historyUnsubscribe = onSnapshot(historyQuery, (snapshot) => {
-            const txs = snapshot.docs.map(doc => ({
-              id: doc.id,
-              ...doc.data()
-            } as Transaction));
+            const txs = snapshot.docs
+              .map(doc => ({
+                id: doc.id,
+                ...doc.data()
+              } as Transaction))
+              .sort((a, b) => {
+                const timeA = a.createdAt?.toMillis?.() || 0;
+                const timeB = b.createdAt?.toMillis?.() || 0;
+                return timeB - timeA; // desc
+              });
             setHistory(txs);
           }, (error) => {
             handleFirestoreError(error, OperationType.LIST, 'transactions');
@@ -1096,17 +1368,14 @@ function ViewVibeApp() {
     }
   };
 
-  const handleRedeem = async (item: RewardItem) => {
+  const handleRedeem = async (reward: Reward) => {
     if (!currentUser || isProcessingRef.current) return;
     
-    if (user.wallet < item.cost) {
-      // Use a custom toast or just a console error for now, avoiding window.alert
-      console.error("Insufficient Balance. Keep watching drops to earn more!");
+    if (user.wallet < reward.cost) {
+      showToast("Insufficient Balance. Keep watching drops to earn more!", 'error');
       return;
     }
 
-    // In a real app, we'd use a custom modal instead of window.confirm
-    // For now, we'll proceed with the redemption directly or add a simple check
     isProcessingRef.current = true;
 
     try {
@@ -1114,7 +1383,7 @@ function ViewVibeApp() {
       
       // 1. Deduct points
       await updateDoc(userDocRef, {
-        wallet: increment(-item.cost)
+        wallet: increment(-reward.cost)
       });
 
       // 2. Create redemption record
@@ -1122,8 +1391,8 @@ function ViewVibeApp() {
         userId: currentUser.uid,
         userEmail: currentUser.email,
         displayName: user.displayName,
-        rewardName: item.name,
-        cost: item.cost,
+        rewardName: reward.title,
+        cost: reward.cost,
         status: 'Pending',
         createdAt: serverTimestamp()
       });
@@ -1132,15 +1401,16 @@ function ViewVibeApp() {
       await addDoc(collection(db, 'transactions'), {
         userId: currentUser.uid,
         type: 'spend',
-        amount: item.cost,
-        note: `Redeemed: ${item.name}`,
+        amount: reward.cost,
+        note: `Redeemed: ${reward.title}`,
         date: new Date().toISOString().split('T')[0],
         createdAt: serverTimestamp()
       });
 
-      console.log("Reward Claimed! The admin has been notified.");
+      showToast("Reward Claimed! The admin has been notified.", 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'redemptions');
+      showToast("Failed to redeem reward.", 'error');
     } finally {
       isProcessingRef.current = false;
     }
@@ -1461,35 +1731,45 @@ function ViewVibeApp() {
                     <h3 className="text-2xl font-black uppercase tracking-tight">Rewards Rack</h3>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {REWARDS.map((item) => {
-                      const canAfford = user.wallet >= item.cost;
-                      return (
-                        <div key={item.id} className="glass-card p-6 flex flex-col group hover:border-purple-500/30 transition-all duration-300">
-                          <div className="flex justify-between items-start mb-4">
-                            <div className="p-3 bg-purple-500/10 rounded-xl text-purple-500 group-hover:scale-110 transition-transform">
-                              <Gift size={24} />
+                    {isRewardsLoading ? (
+                      <div className="col-span-full py-12 flex justify-center">
+                        <RefreshCw className="animate-spin text-purple-500" size={32} />
+                      </div>
+                    ) : rewards.length === 0 ? (
+                      <div className="col-span-full py-12 text-center glass-card">
+                        <p className="text-slate-500 font-black uppercase tracking-widest text-xs">No rewards available right now</p>
+                      </div>
+                    ) : (
+                      rewards.map((item) => {
+                        const canAfford = user.wallet >= item.cost;
+                        return (
+                          <div key={item.id} className="glass-card p-6 flex flex-col group hover:border-purple-500/30 transition-all duration-300">
+                            <div className="flex justify-between items-start mb-4">
+                              <div className="p-3 bg-purple-500/10 rounded-xl text-purple-500 group-hover:scale-110 transition-transform">
+                                <Gift size={24} />
+                              </div>
+                              <div className="text-right">
+                                <p className="text-xl font-black">{item.cost.toLocaleString()}</p>
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Points</p>
+                              </div>
                             </div>
-                            <div className="text-right">
-                              <p className="text-xl font-black">{item.cost.toLocaleString()}</p>
-                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Points</p>
-                            </div>
+                            <h4 className="text-lg font-black mb-2">{item.title}</h4>
+                            <p className="text-sm text-slate-400 mb-6 flex-1">Redeem your points for this exclusive reward.</p>
+                            <button
+                              disabled={!canAfford}
+                              onClick={() => handleRedeem(item)}
+                              className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-xs transition-all duration-300 ${
+                                canAfford 
+                                  ? 'bg-gradient-to-r from-orange-500 to-purple-500 text-white hover:scale-105 shadow-lg shadow-purple-500/20' 
+                                  : 'bg-white/5 text-slate-600 cursor-not-allowed'
+                              }`}
+                            >
+                              {canAfford ? 'Redeem Now' : 'Insufficient Funds'}
+                            </button>
                           </div>
-                          <h4 className="text-lg font-black mb-2">{item.name}</h4>
-                          <p className="text-sm text-slate-400 mb-6 flex-1">{item.description}</p>
-                          <button
-                            disabled={!canAfford}
-                            onClick={() => handleRedeem(item)}
-                            className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-xs transition-all duration-300 ${
-                              canAfford 
-                                ? 'bg-gradient-to-r from-orange-500 to-purple-500 text-white hover:scale-105 shadow-lg shadow-purple-500/20' 
-                                : 'bg-white/5 text-slate-600 cursor-not-allowed'
-                            }`}
-                          >
-                            {canAfford ? 'Redeem Now' : 'Insufficient Funds'}
-                          </button>
-                        </div>
-                      );
-                    })}
+                        );
+                      })
+                    )}
                   </div>
                 </div>
 

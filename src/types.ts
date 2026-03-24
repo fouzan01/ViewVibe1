@@ -40,6 +40,14 @@ export interface LeaderboardUser {
   avatar: string;
 }
 
+export interface Reward {
+  id?: string;
+  title: string;
+  cost: number;
+  isActive: boolean;
+  createdAt: any; // Firestore Timestamp
+}
+
 export interface RewardItem {
   id: string;
   name: string;
@@ -56,6 +64,7 @@ export interface Redemption {
   cost: number;
   status: 'Pending' | 'Completed';
   createdAt: any; // Firestore Timestamp
+  completedAt?: any; // Firestore Timestamp
 }
 
 export enum OperationType {

@@ -38,9 +38,22 @@
         "rewardName": { "type": "string", "description": "Name of the redeemed reward" },
         "cost": { "type": "number", "description": "Points cost of the reward" },
         "status": { "type": "string", "enum": ["Pending", "Completed"], "description": "Current status of fulfillment" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "When the redemption occurred" }
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the redemption occurred" },
+        "completedAt": { "type": "string", "format": "date-time", "description": "When the redemption was approved" }
       },
       "required": ["userId", "userEmail", "displayName", "rewardName", "cost", "status", "createdAt"]
+    },
+    "Reward": {
+      "title": "Store Reward",
+      "description": "Stores dynamic reward items for the store.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Name of the reward" },
+        "cost": { "type": "number", "description": "Points cost" },
+        "isActive": { "type": "boolean", "description": "Whether the reward is visible in the store" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the reward was created" }
+      },
+      "required": ["title", "cost", "isActive", "createdAt"]
     },
     "Transaction": {
       "title": "User Transaction",
@@ -69,6 +82,10 @@
     "/redemptions/{redemptionId}": {
       "schema": "Redemption",
       "description": "Collection of reward redemption requests."
+    },
+    "/rewards/{rewardId}": {
+      "schema": "Reward",
+      "description": "Dynamic store reward items."
     },
     "/transactions/{transactionId}": {
       "schema": "Transaction",
