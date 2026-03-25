@@ -14,6 +14,8 @@ service cloud.firestore {
     //   - verifiedWatchTime: number (required, non-negative)
     //   - referrals: number (required, non-negative)
     //   - claimedVideos: list (required, strings)
+    //   - extraLives: number (required, 0-5)
+    //   - totalCorrect: number (required, non-negative)
     //
     // ===============================================================
 
@@ -39,9 +41,7 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() && 
-             (request.auth.token.email == "fouzan1605@gmail.com" || 
-              request.auth.uid == "3pRku579TrdPPV1nTzdsCJzWvYr2");
+      return isAuthenticated() && request.auth.token.email == "fouzan1605@gmail.com";
     }
 
     function isValidEmail(email) {
@@ -49,16 +49,26 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return data.keys().hasAll(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos']) &&
-             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'activeMissionId', 'createdAt']) &&
+      return data.keys().hasAll(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'extraLives', 'totalCorrect']) &&
+             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'activeMissionId', 'createdAt', 'extraLives', 'totalCorrect']) &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
              isValidEmail(data.email) &&
              data.wallet is number && data.wallet >= 0 &&
              data.verifiedWatchTime is number && data.verifiedWatchTime >= 0 &&
              data.referrals is number && data.referrals >= 0 &&
              data.claimedVideos is list &&
+             data.extraLives is number && data.extraLives >= 0 && data.extraLives <= 5 &&
+             data.totalCorrect is number && data.totalCorrect >= 0 &&
              (!('createdAt' in data) || data.createdAt is timestamp) &&
              (!('activeMissionId' in data) || data.activeMissionId == null || data.activeMissionId is string);
+    }
+
+    function isValidGuestView(data) {
+      return data.keys().hasAll(['visitorId', 'videoId', 'createdAt']) &&
+             data.keys().hasOnly(['visitorId', 'videoId', 'createdAt']) &&
+             data.visitorId is string && data.visitorId.size() > 0 &&
+             data.videoId is string && data.videoId.size() > 0 &&
+             data.createdAt is timestamp;
     }
 
     function isValidVideo(data) {
@@ -82,7 +92,6 @@ service cloud.firestore {
     function isValidRedemption(data) {
       return data.keys().hasAll(['userId', 'userEmail', 'displayName', 'rewardName', 'cost', 'status', 'createdAt']) &&
              data.keys().hasOnly(['userId', 'userEmail', 'displayName', 'rewardName', 'cost', 'status', 'createdAt', 'completedAt']) &&
-             data.userId == (request.method == 'create' ? request.auth.uid : resource.data.userId) &&
              data.displayName is string && data.displayName.size() > 0 &&
              data.rewardName is string && data.rewardName.size() > 0 &&
              data.cost is number && data.cost >= 0 &&
@@ -94,7 +103,7 @@ service cloud.firestore {
     function isValidTransaction(data) {
       return data.keys().hasAll(['userId', 'type', 'amount', 'note', 'date', 'createdAt']) &&
              data.keys().hasOnly(['userId', 'type', 'amount', 'note', 'date', 'createdAt']) &&
-             data.userId == request.auth.uid &&
+             data.userId is string &&
              data.type in ['earn', 'spend'] &&
              data.amount is number && data.amount >= 0 &&
              data.note is string && data.note.size() > 0 &&
@@ -103,32 +112,54 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow read: if isOwner(userId);
+      // Public read for Leaderboard
+      allow read: if true;
+      // Users can only create their own profile
       allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      // Authenticated users can update profiles (for client-side referral/mission rewards)
+      // WARNING: This is an MVP policy. In production, use Cloud Functions for cross-user updates.
+      allow update: if isAuthenticated() && isValidUser(request.resource.data);
     }
 
     match /transactions/{transactionId} {
+      // Users can read their own transactions, Admin can read all
       allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+      // Authenticated users can create transactions (for client-side rewards)
       allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
+      // Transactions are immutable
+      allow update, delete: if false;
     }
 
     match /videos/{videoId} {
+      // Public read for Mission Board
       allow read: if true;
-      allow write: if isAdmin() && isValidVideo(request.resource.data);
-      allow delete: if isAdmin();
+      // Admin only management
+      allow write, delete: if isAdmin() && (request.method == 'delete' || isValidVideo(request.resource.data));
     }
 
     match /redemptions/{redemptionId} {
+      // Owner or Admin read
       allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
-      allow create: if isAuthenticated() && isValidRedemption(request.resource.data);
-      allow update: if isAdmin() && isValidRedemption(request.resource.data);
+      // Authenticated users can create their own redemptions
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid && isValidRedemption(request.resource.data);
+      // Only Admin can update status or delete
+      allow update, delete: if isAdmin();
     }
 
     match /rewards/{rewardId} {
+      // Public read for Store
       allow read: if true;
-      allow write: if isAdmin() && isValidReward(request.resource.data);
-      allow delete: if isAdmin();
+      // Admin only management
+      allow write, delete: if isAdmin() && (request.method == 'delete' || isValidReward(request.resource.data));
+    }
+
+    match /guest_views/{guestViewId} {
+      // Public read to check if already watched
+      allow read: if true;
+      // Public create for guests (visitorId_videoId as ID)
+      allow create: if isValidGuestView(request.resource.data);
+      // Immutable
+      allow update, delete: if false;
     }
   }
 }

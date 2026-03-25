@@ -4,6 +4,8 @@ export interface UserData {
   wallet: number;
   verifiedWatchTime: number;
   referrals: number;
+  extraLives: number;
+  totalCorrect: number;
   claimedVideos: string[];
   activeMissionId?: string | null;
   createdAt?: any;

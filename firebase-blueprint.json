@@ -11,9 +11,22 @@
         "verifiedWatchTime": { "type": "number", "description": "Total verified watch time in minutes" },
         "referrals": { "type": "number", "description": "Total number of successful referrals" },
         "claimedVideos": { "type": "array", "items": { "type": "string" }, "description": "List of video IDs for which rewards have been claimed" },
-        "activeMissionId": { "type": "string", "description": "ID of the currently active mission, if any" }
+        "activeMissionId": { "type": "string", "description": "ID of the currently active mission, if any" },
+        "extraLives": { "type": "number", "description": "Number of extra lives for the Mission Board" },
+        "totalCorrect": { "type": "number", "description": "Total number of correct guesses" }
       },
-      "required": ["displayName", "email", "wallet", "verifiedWatchTime", "referrals", "claimedVideos"]
+      "required": ["displayName", "email", "wallet", "verifiedWatchTime", "referrals", "claimedVideos", "extraLives", "totalCorrect"]
+    },
+    "GuestView": {
+      "title": "Guest View Record",
+      "description": "Prevents repeat guest rewards from the same device.",
+      "type": "object",
+      "properties": {
+        "visitorId": { "type": "string", "description": "Fingerprint visitor ID" },
+        "videoId": { "type": "string", "description": "YouTube video ID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the view occurred" }
+      },
+      "required": ["visitorId", "videoId", "createdAt"]
     },
     "Video": {
       "title": "Drop Video",
@@ -90,6 +103,10 @@
     "/transactions/{transactionId}": {
       "schema": "Transaction",
       "description": "Collection of user point transactions."
+    },
+    "/guest_views/{guestViewId}": {
+      "schema": "GuestView",
+      "description": "Collection of guest view records to prevent abuse."
     }
   }
 }

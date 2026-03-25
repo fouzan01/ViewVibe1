@@ -4,6 +4,8 @@
  */
 
 import React, { Component, useState, useEffect, useMemo } from 'react';
+import YouTube from 'react-youtube';
+import FingerprintJS from '@fingerprintjs/fingerprintjs';
 import { 
   Play, 
   Trophy, 
@@ -29,7 +31,9 @@ import {
   EyeOff,
   Eye,
   ShoppingBag,
-  Activity
+  Activity,
+  Share2,
+  Heart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings, Video, Redemption, Reward } from './types';
@@ -146,6 +150,8 @@ const INITIAL_USER_DATA: UserData = {
   wallet: 0,
   verifiedWatchTime: 0,
   referrals: 0,
+  extraLives: 0,
+  totalCorrect: 0,
   claimedVideos: [],
   activeMissionId: null,
 };
@@ -280,7 +286,7 @@ const AdminDashboard = ({
       setStatus('success');
       setTimeout(() => setStatus('idle'), 3000);
     } catch (error) {
-      console.error("Failed to add video:", error);
+      handleFirestoreError(error, OperationType.CREATE, 'videos');
       setStatus('error');
     } finally {
       setIsSaving(false);
@@ -300,7 +306,7 @@ const AdminDashboard = ({
       setRewardTitle('');
       setRewardCost('');
     } catch (error) {
-      console.error("Failed to create reward:", error);
+      handleFirestoreError(error, OperationType.CREATE, 'rewards');
     } finally {
       setIsSaving(false);
     }
@@ -735,8 +741,17 @@ const MissionBoard = ({
   const [isLoading, setIsLoading] = useState(true);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [verificationState, setVerificationState] = useState<'idle' | 'success' | 'fail' | 'claimed'>('idle');
-  const [watchTimer, setWatchTimer] = useState(0);
+  const [isOutOfLives, setIsOutOfLives] = useState(false);
+  
+  // Anti-Cheat States
+  const [player, setPlayer] = useState<any>(null);
+  const [watchedSeconds, setWatchedSeconds] = useState(0);
+  const [maxWatchedTime, setMaxWatchedTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  
   const isProcessingRef = React.useRef(false);
+  const timerRef = React.useRef<any>(null);
 
   useEffect(() => {
     const vQuery = query(collection(db, 'videos'));
@@ -758,23 +773,52 @@ const MissionBoard = ({
     return () => unsubscribe();
   }, [currentUser]);
 
+  // Anti-Cheat Watch Time Tracker & Skip Enforcer
   useEffect(() => {
-    let interval: any;
-    if (selectedVideo) {
-      interval = setInterval(() => {
-        setWatchTimer(prev => prev + 1);
+    if (isPlaying && player && selectedVideo) {
+      timerRef.current = setInterval(() => {
+        const currentTime = player.getCurrentTime();
+        
+        // 1. Real Watch Time Tracking
+        setWatchedSeconds(prev => prev + 1);
+
+        // 2. Anti-Skip Enforcer
+        if (currentTime > maxWatchedTime + 2) {
+          player.seekTo(maxWatchedTime, true);
+          showToast("Skipping is disabled! Watch the full drop to earn points.", "error");
+        } else {
+          setMaxWatchedTime(Math.max(maxWatchedTime, currentTime));
+        }
       }, 1000);
     } else {
-      setWatchTimer(0);
+      if (timerRef.current) clearInterval(timerRef.current);
     }
-    return () => clearInterval(interval);
-  }, [selectedVideo]);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [isPlaying, player, selectedVideo, maxWatchedTime]);
+
+  const onPlayerReady = (event: any) => {
+    setPlayer(event.target);
+    setDuration(event.target.getDuration());
+  };
+
+  const onPlayerStateChange = (event: any) => {
+    // YouTube.PlayerState.PLAYING is 1
+    setIsPlaying(event.data === 1);
+  };
 
   const handleVideoSelect = async (video: Video) => {
     if (user.claimedVideos.includes(video.youtubeVideoId)) return;
     setSelectedVideo(video);
     setVerificationState('idle');
-    setWatchTimer(0);
+    setIsOutOfLives(false);
+    
+    // Reset Anti-Cheat States
+    setWatchedSeconds(0);
+    setMaxWatchedTime(0);
+    setDuration(0);
+    setIsPlaying(false);
 
     // Persist active mission if logged in
     if (currentUser) {
@@ -801,6 +845,17 @@ const MissionBoard = ({
     }
   };
 
+  const handleShareVideo = (videoId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!currentUser) {
+      showToast("Please sign in to share drops!", "error");
+      return;
+    }
+    const shareLink = `https://viewvibeus.netlify.app/guest/${videoId}?ref=${currentUser.uid}`;
+    navigator.clipboard.writeText(shareLink);
+    showToast("Referral link for this drop copied!", "success");
+  };
+
   useEffect(() => {
     if (user.activeMissionId && videos.length > 0 && !selectedVideo) {
       const active = videos.find(v => v.id === user.activeMissionId);
@@ -811,10 +866,15 @@ const MissionBoard = ({
   }, [user.activeMissionId, videos, selectedVideo, user.claimedVideos]);
 
   const handleVerify = async (color: string) => {
-    if (!currentUser || isProcessingRef.current || !selectedVideo) return;
+    if (!currentUser || isProcessingRef.current || !selectedVideo || isOutOfLives) return;
     if (verificationState !== 'idle') return;
+
+    // 3. Anti-Guess Button Lock Check
+    if (maxWatchedTime < duration * 0.8) {
+      showToast("Keep watching to unlock verification!", "error");
+      return;
+    }
     
-    // INFINITE POINTS EXPLOIT FIX: Check if already claimed before verifying
     if (user.claimedVideos?.includes(selectedVideo.youtubeVideoId)) {
       setVerificationState('fail');
       showToast('You have already claimed this drop!', 'error');
@@ -829,14 +889,16 @@ const MissionBoard = ({
 
     if (color === selectedVideo.correctColor) {
       setVerificationState('success');
-      const points = 50;
+      
+      // 4. Fractional Point Payout
+      const points = Math.floor((watchedSeconds / duration) * 50);
       onRewardClaimed(selectedVideo.youtubeVideoId, points);
       
       // Clear active mission on success
       if (currentUser) {
         updateDoc(doc(db, 'users', currentUser.uid), {
           activeMissionId: null
-        }).catch(e => console.error("Failed to clear mission on success:", e));
+        }).catch(e => handleFirestoreError(e, OperationType.UPDATE, `users/${currentUser.uid}`));
       }
 
       setTimeout(() => {
@@ -844,11 +906,28 @@ const MissionBoard = ({
         isProcessingRef.current = false;
       }, 2000);
     } else {
-      setVerificationState('fail');
-      setTimeout(() => {
-        setVerificationState('idle');
+      // WRONG GUESS LOGIC
+      if (user.extraLives > 0) {
+        try {
+          await updateDoc(doc(db, 'users', currentUser.uid), {
+            extraLives: increment(-1)
+          });
+          setVerificationState('fail');
+          showToast(`Wrong Color! -1 Life used. Try again! (${user.extraLives - 1} left)`, 'error');
+          setTimeout(() => {
+            setVerificationState('idle');
+            isProcessingRef.current = false;
+          }, 2000);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
+          isProcessingRef.current = false;
+        }
+      } else {
+        setVerificationState('fail');
+        setIsOutOfLives(true);
+        showToast("Incorrect! Out of lives. You lost the points for this drop.", "error");
         isProcessingRef.current = false;
-      }, 2000);
+      }
     }
   };
 
@@ -861,6 +940,8 @@ const MissionBoard = ({
     );
   }
 
+  const isUnlocked = duration > 0 && maxWatchedTime >= duration * 0.8;
+
   return (
     <div className="space-y-12">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
@@ -868,13 +949,23 @@ const MissionBoard = ({
           <h2 className="text-5xl font-black uppercase tracking-tighter mb-2">Mission Board</h2>
           <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Complete drops to earn elite rewards</p>
         </div>
-        <div className="flex items-center gap-4 glass-card px-6 py-3 bg-white/5">
-          <div className="text-right">
-            <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Completed</p>
-            <p className="text-xl font-black text-white">{user.claimedVideos.length} / {videos.length}</p>
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4 glass-card px-6 py-3 bg-white/5">
+            <div className="text-right">
+              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Lifelines</p>
+              <p className="text-xl font-black text-rose-500">{user.extraLives} / 5</p>
+            </div>
+            <div className="w-px h-8 bg-white/10" />
+            <Heart className={`text-rose-500 ${user.extraLives > 0 ? 'animate-pulse' : ''}`} size={24} fill={user.extraLives > 0 ? "currentColor" : "none"} />
           </div>
-          <div className="w-px h-8 bg-white/10" />
-          <Trophy className="text-orange-500" size={24} />
+          <div className="flex items-center gap-4 glass-card px-6 py-3 bg-white/5">
+            <div className="text-right">
+              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Completed</p>
+              <p className="text-xl font-black text-white">{user.claimedVideos.length} / {videos.length}</p>
+            </div>
+            <div className="w-px h-8 bg-white/10" />
+            <Trophy className="text-orange-500" size={24} />
+          </div>
         </div>
       </div>
 
@@ -927,14 +1018,22 @@ const MissionBoard = ({
           >
             <div className="lg:col-span-2 space-y-6">
               <div className="glass-card p-2 aspect-video relative overflow-hidden">
-                <iframe
+                <YouTube
+                  videoId={selectedVideo.youtubeVideoId}
+                  opts={{
+                    width: '100%',
+                    height: '100%',
+                    playerVars: {
+                      autoplay: 1,
+                      controls: 1,
+                      rel: 0,
+                      modestbranding: 1,
+                    },
+                  }}
+                  onReady={onPlayerReady}
+                  onStateChange={onPlayerStateChange}
                   className="w-full h-full rounded-xl"
-                  src={`https://www.youtube.com/embed/${selectedVideo.youtubeVideoId}?autoplay=1&controls=1&rel=0`}
-                  title="Mission Video"
-                  frameBorder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                ></iframe>
+                />
               </div>
               <div className="flex items-center justify-between p-6 glass-card">
                 <div className="flex items-center gap-4">
@@ -956,33 +1055,66 @@ const MissionBoard = ({
             </div>
 
             <div className="glass-card p-8 flex flex-col items-center text-center">
-              <h3 className="text-xl font-black uppercase tracking-widest mb-2">Verification</h3>
-              <p className={`text-sm font-bold uppercase tracking-widest mb-8 ${
-                verificationState === 'idle' ? 'text-slate-500' : 
-                verificationState === 'success' ? 'text-emerald-500' : 'text-rose-500'
-              }`}>
-                {verificationState === 'idle' && 'Select the Hidden Color'}
-                {verificationState === 'success' && 'Mission Accomplished!'}
-                {verificationState === 'fail' && 'Incorrect Selection!'}
-              </p>
-
-              <div className="grid grid-cols-2 gap-4 w-full">
-                {COLORS.map((btn) => (
-                  <motion.button
-                    key={btn.name}
-                    whileHover={{ scale: verificationState === 'idle' ? 1.05 : 1 }}
-                    whileTap={{ scale: verificationState === 'idle' ? 0.95 : 1 }}
-                    disabled={verificationState !== 'idle'}
-                    onClick={() => handleVerify(btn.name)}
-                    className={`glass-card p-6 flex flex-col items-center gap-4 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${btn.shadow} ${
-                      verificationState === 'success' && btn.name === selectedVideo.correctColor ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
-                    }`}
-                  >
-                    <div className={`w-10 h-10 rounded-full ${btn.color} shadow-lg shadow-black/50`} />
-                    <span className="text-xs font-black uppercase tracking-tighter">{btn.name}</span>
-                  </motion.button>
-                ))}
+              <div className="flex items-center justify-between w-full mb-6">
+                <h3 className="text-xl font-black uppercase tracking-widest">Verification</h3>
+                <div className="flex items-center gap-2 px-3 py-1 bg-rose-500/10 rounded-full border border-rose-500/20">
+                  <Heart className="text-rose-500" size={12} fill="currentColor" />
+                  <span className="text-rose-500 text-xs font-black">{user.extraLives}</span>
+                </div>
               </div>
+              
+              {!isUnlocked ? (
+                <div className="flex flex-col items-center justify-center flex-1 py-10">
+                  <Lock className="text-slate-600 mb-4 animate-pulse" size={48} />
+                  <p className="text-slate-500 font-black uppercase tracking-widest text-[10px] max-w-[200px]">
+                    Keep watching to unlock verification...
+                  </p>
+                  <p className="text-orange-500 font-mono text-xs mt-2">
+                    {Math.floor(maxWatchedTime)}s / {Math.floor(duration * 0.8)}s
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <p className={`text-sm font-bold uppercase tracking-widest mb-8 ${
+                    verificationState === 'idle' ? 'text-slate-500' : 
+                    verificationState === 'success' ? 'text-emerald-500' : 'text-rose-500'
+                  }`}>
+                    {verificationState === 'idle' && 'Select the Hidden Color'}
+                    {verificationState === 'success' && 'Mission Accomplished!'}
+                    {verificationState === 'fail' && 'Incorrect Selection!'}
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-4 w-full">
+                    {COLORS.map((btn) => (
+                      <motion.button
+                        key={btn.name}
+                        whileHover={{ scale: (verificationState === 'idle' && !isOutOfLives) ? 1.05 : 1 }}
+                        whileTap={{ scale: (verificationState === 'idle' && !isOutOfLives) ? 0.95 : 1 }}
+                        disabled={verificationState !== 'idle' || isOutOfLives}
+                        onClick={() => handleVerify(btn.name)}
+                        className={`glass-card p-6 flex flex-col items-center gap-4 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${btn.shadow} ${
+                          verificationState === 'success' && btn.name === selectedVideo.correctColor ? 'border-emerald-500 bg-emerald-500/20 animate-pulse' : ''
+                        }`}
+                      >
+                        <div className={`w-10 h-10 rounded-full ${btn.color} shadow-lg shadow-black/50`} />
+                        <span className="text-xs font-black uppercase tracking-tighter">{btn.name}</span>
+                      </motion.button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {isOutOfLives && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="mt-8 p-6 w-full glass-card border-rose-500/50 bg-rose-500/10 flex flex-col items-center gap-3"
+                >
+                  <XCircle className="text-rose-500" size={32} />
+                  <p className="font-black text-rose-400 uppercase tracking-tighter text-sm">Incorrect! Out of lives.</p>
+                  <p className="text-[10px] text-rose-500/70 font-bold uppercase">You lost the points for this drop.</p>
+                </motion.div>
+              )}
 
               {verificationState === 'success' && (
                 <motion.div 
@@ -991,7 +1123,7 @@ const MissionBoard = ({
                   className="mt-8 p-4 w-full glass-card border-emerald-500/30 bg-emerald-500/10 flex items-center justify-center gap-3"
                 >
                   <CheckCircle2 className="text-emerald-500" />
-                  <span className="font-bold text-emerald-400">+50 PTS AWARDED</span>
+                  <span className="font-bold text-emerald-400">+{Math.floor((watchedSeconds / duration) * 50)} PTS AWARDED</span>
                 </motion.div>
               )}
 
@@ -1009,15 +1141,18 @@ const MissionBoard = ({
               <div className="mt-auto pt-8 w-full">
                 <div className="flex justify-between text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
                   <span>Watch Progress</span>
-                  <span>{Math.min(100, Math.floor((watchTimer / 60) * 100))}%</span>
+                  <span>{duration > 0 ? Math.min(100, Math.floor((maxWatchedTime / duration) * 100)) : 0}%</span>
                 </div>
                 <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
                   <motion.div 
                     initial={{ width: 0 }}
-                    animate={{ width: `${Math.min(100, (watchTimer / 60) * 100)}%` }}
+                    animate={{ width: `${duration > 0 ? Math.min(100, (maxWatchedTime / duration) * 100) : 0}%` }}
                     className="h-full bg-orange-500"
                   />
                 </div>
+                <p className="text-[8px] font-mono text-slate-600 mt-2 uppercase">
+                  Effort: {watchedSeconds}s / {Math.floor(duration)}s
+                </p>
               </div>
             </div>
           </motion.div>
@@ -1037,12 +1172,20 @@ const MissionBoard = ({
               videos.map((v) => {
                 const isClaimed = user.claimedVideos.includes(v.youtubeVideoId);
                 return (
-                  <motion.button
+                  <motion.div
                     key={v.id}
                     whileHover={!isClaimed ? { y: -5, scale: 1.02 } : {}}
-                    onClick={() => handleVideoSelect(v)}
+                    onClick={() => !isClaimed && handleVideoSelect(v)}
+                    onKeyDown={(e) => {
+                      if (!isClaimed && (e.key === 'Enter' || e.key === ' ')) {
+                        e.preventDefault();
+                        handleVideoSelect(v);
+                      }
+                    }}
+                    tabIndex={isClaimed ? -1 : 0}
+                    role="button"
                     className={`glass-card p-4 text-left group transition-all duration-300 ${
-                      isClaimed ? 'opacity-50 grayscale cursor-default' : 'hover:border-orange-500/50'
+                      isClaimed ? 'opacity-50 grayscale cursor-default' : 'hover:border-orange-500/50 cursor-pointer'
                     }`}
                   >
                     <div className="aspect-video rounded-xl overflow-hidden mb-4 relative">
@@ -1050,6 +1193,7 @@ const MissionBoard = ({
                         src={`https://img.youtube.com/vi/${v.youtubeVideoId}/maxresdefault.jpg`} 
                         alt="Mission Thumbnail" 
                         className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
                       />
                       {!isClaimed && (
                         <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1076,18 +1220,222 @@ const MissionBoard = ({
                           {v.createdAt?.toDate ? v.createdAt.toDate().toLocaleDateString() : 'Recent Drop'}
                         </p>
                       </div>
-                      <div className="flex items-center gap-1 text-orange-500">
-                        <span className="text-sm font-black">+50</span>
-                        <span className="text-[8px] font-bold uppercase">PTS</span>
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="flex items-center gap-1 text-orange-500">
+                          <span className="text-sm font-black">+50</span>
+                          <span className="text-[8px] font-bold uppercase">PTS</span>
+                        </div>
+                        <button
+                          onClick={(e) => handleShareVideo(v.youtubeVideoId, e)}
+                          className="p-2 bg-white/5 hover:bg-orange-500/20 text-slate-400 hover:text-orange-500 rounded-lg transition-all border border-white/5 hover:border-orange-500/30 group/share"
+                          title="Share for Referral Points"
+                        >
+                          <Share2 size={14} className="group-hover/share:scale-110 transition-transform" />
+                        </button>
                       </div>
                     </div>
-                  </motion.button>
+                  </motion.div>
                 );
               })
             )}
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+};
+
+// --- Guest View ---
+
+const GuestView = ({ showToast }: { showToast: (msg: string, type: 'success' | 'error') => void }) => {
+  const [player, setPlayer] = useState<any>(null);
+  const [duration, setDuration] = useState(0);
+  const [maxWatchedTime, setMaxWatchedTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [visitorId, setVisitorId] = useState<string | null>(null);
+  const [isProcessed, setIsProcessed] = useState(false);
+  
+  const timerRef = React.useRef<any>(null);
+  
+  // Get videoId and refCode from URL
+  const pathParts = window.location.pathname.split('/');
+  const videoId = pathParts[2];
+  const params = new URLSearchParams(window.location.search);
+  const refCode = params.get('ref');
+
+  useEffect(() => {
+    const initFingerprint = async () => {
+      const fp = await FingerprintJS.load();
+      const result = await fp.get();
+      setVisitorId(result.visitorId);
+    };
+    initFingerprint();
+  }, []);
+
+  useEffect(() => {
+    if (isPlaying && player && videoId && visitorId && !isProcessed) {
+      timerRef.current = setInterval(async () => {
+        const currentTime = player.getCurrentTime();
+        setMaxWatchedTime(prev => Math.max(prev, currentTime));
+
+        // Check for 80% watch time
+        if (currentTime >= duration * 0.8 && duration > 0) {
+          clearInterval(timerRef.current);
+          setIsProcessed(true);
+          await handleGuestReward();
+        }
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [isPlaying, player, duration, videoId, visitorId, isProcessed]);
+
+  const handleGuestReward = async () => {
+    if (!visitorId || !videoId) return;
+
+    const guestViewId = `${visitorId}_${videoId}`;
+    const guestViewRef = doc(db, 'guest_views', guestViewId);
+    
+    try {
+      const guestViewDoc = await getDoc(guestViewRef);
+      
+      if (guestViewDoc.exists()) {
+        showToast("Thanks for watching! Create an account to start earning your own points.", "success");
+      } else {
+        // Lock this device for this video
+        await setDoc(guestViewRef, {
+          visitorId,
+          videoId,
+          createdAt: serverTimestamp()
+        });
+
+        // Reward the referrer if exists
+        if (refCode) {
+          const referrerRef = doc(db, 'users', refCode);
+          const referrerDoc = await getDoc(referrerRef);
+          
+          if (referrerDoc.exists()) {
+            await updateDoc(referrerRef, {
+              wallet: increment(10)
+            });
+            
+            // Add transaction for referrer
+            await addDoc(collection(db, 'transactions'), {
+              userId: refCode,
+              type: 'earn',
+              amount: 10,
+              note: `Guest View Bonus (Ref: ${visitorId.slice(0, 8)})`,
+              date: new Date().toISOString().split('T')[0],
+              createdAt: serverTimestamp()
+            });
+            
+            showToast("Success! You just earned points for your friend. Sign up to earn cash yourself!", "success");
+          } else {
+            showToast("Thanks for watching! Sign up to start earning points yourself.", "success");
+          }
+        } else {
+          showToast("Thanks for watching! Sign up to start earning points yourself.", "success");
+        }
+      }
+    } catch (error) {
+      console.error("Guest reward error:", error);
+    }
+  };
+
+  const onPlayerReady = (event: any) => {
+    setPlayer(event.target);
+    setDuration(event.target.getDuration());
+  };
+
+  const onPlayerStateChange = (event: any) => {
+    setIsPlaying(event.data === 1);
+  };
+
+  if (!videoId) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center">
+        <AlertTriangle className="text-orange-500 mb-4" size={48} />
+        <h2 className="text-2xl font-black uppercase tracking-tighter mb-2">Invalid Guest Link</h2>
+        <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Please use a valid referral link to watch drops.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-white selection:bg-orange-500/30">
+      <div className="max-w-4xl mx-auto px-6 py-12 space-y-12">
+        <div className="text-center space-y-4">
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-orange-500/10 rounded-full border border-orange-500/20 mb-4">
+            <Play className="text-orange-500" size={16} />
+            <span className="text-orange-500 text-[10px] font-black uppercase tracking-widest">Guest Mission Mode</span>
+          </div>
+          <h1 className="text-6xl font-black uppercase tracking-tighter leading-none">
+            Watch & <span className="text-orange-500">Support</span>
+          </h1>
+          <p className="text-slate-500 font-bold uppercase tracking-widest text-xs max-w-md mx-auto">
+            You are watching a mission drop to help a friend earn points. Watch 80% to complete the support!
+          </p>
+        </div>
+
+        <div className="glass-card p-2 aspect-video relative overflow-hidden shadow-2xl shadow-orange-500/10">
+          <YouTube
+            videoId={videoId}
+            opts={{
+              width: '100%',
+              height: '100%',
+              playerVars: {
+                autoplay: 1,
+                controls: 1,
+                rel: 0,
+                modestbranding: 1,
+              },
+            }}
+            onReady={onPlayerReady}
+            onStateChange={onPlayerStateChange}
+            className="w-full h-full rounded-xl"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="glass-card p-8 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-black uppercase tracking-tight">Support Progress</h3>
+              <span className="text-orange-500 font-mono text-xs">
+                {duration > 0 ? Math.min(100, Math.floor((maxWatchedTime / (duration * 0.8)) * 100)) : 0}%
+              </span>
+            </div>
+            <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
+              <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: `${duration > 0 ? Math.min(100, (maxWatchedTime / (duration * 0.8)) * 100) : 0}%` }}
+                className="h-full bg-orange-500 shadow-[0_0_15px_rgba(249,115,22,0.5)]"
+              />
+            </div>
+            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-center">
+              {isProcessed ? "Support Completed! 🎉" : "Keep watching to support your friend"}
+            </p>
+          </div>
+
+          <div className="glass-card p-8 flex flex-col items-center justify-center text-center space-y-4 border-orange-500/20 bg-orange-500/5">
+            <Gift className="text-orange-500" size={32} />
+            <div>
+              <h3 className="text-lg font-black uppercase tracking-tight">Want to earn too?</h3>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
+                Create an account and start earning cash for every drop you watch!
+              </p>
+            </div>
+            <button 
+              onClick={() => window.location.href = '/'}
+              className="w-full py-3 bg-orange-500 hover:bg-orange-600 text-white font-black uppercase tracking-widest text-xs rounded-xl transition-all shadow-lg shadow-orange-500/20"
+            >
+              Join ViewVibe Now
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
@@ -1193,6 +1541,10 @@ function ViewVibeApp() {
     if (window.location.pathname === '/admin') {
       setActiveTab('admin');
     }
+    
+    if (window.location.pathname.startsWith('/guest/')) {
+      setActiveTab('guest' as any);
+    }
 
     // Capture Referral Code
     const params = new URLSearchParams(window.location.search);
@@ -1260,6 +1612,8 @@ function ViewVibeApp() {
               referrals: 0,
               claimedVideos: [],
               activeMissionId: null,
+              extraLives: 0,
+              totalCorrect: 0,
               createdAt: serverTimestamp(),
             };
             await setDoc(userDocRef, newUserData);
@@ -1368,7 +1722,7 @@ function ViewVibeApp() {
               });
             }
           } catch (e) {
-            console.error("Referral reward failed:", e);
+            handleFirestoreError(e, OperationType.UPDATE, `users/${refCode}`);
           }
           
           localStorage.removeItem('referralCode');
@@ -1380,6 +1734,8 @@ function ViewVibeApp() {
           wallet: initialWallet,
           verifiedWatchTime: 0,
           referrals: 0,
+          extraLives: 0,
+          totalCorrect: 0,
           claimedVideos: [],
           activeMissionId: null,
           createdAt: serverTimestamp(),
@@ -1428,10 +1784,21 @@ function ViewVibeApp() {
 
     const userDocRef = doc(db, 'users', currentUser.uid);
     try {
+      const newTotalCorrect = (user.totalCorrect || 0) + 1;
+      let extraLifeEarned = false;
+      let extraLivesUpdate = user.extraLives || 0;
+
+      if (newTotalCorrect % 5 === 0 && extraLivesUpdate < 5) {
+        extraLivesUpdate += 1;
+        extraLifeEarned = true;
+      }
+
       await updateDoc(userDocRef, {
         wallet: increment(points),
-        verifiedWatchTime: increment(1), // Increment by 1 minute for each mission
-        claimedVideos: arrayUnion(videoId)
+        verifiedWatchTime: increment(1),
+        claimedVideos: arrayUnion(videoId),
+        totalCorrect: newTotalCorrect,
+        extraLives: extraLivesUpdate
       });
 
       // 2. Add transaction record
@@ -1444,7 +1811,7 @@ function ViewVibeApp() {
         createdAt: serverTimestamp()
       });
       
-      showToast(`+${points} Points Earned!`, 'success');
+      showToast(`Correct! +${points} Points. ${extraLifeEarned ? 'You earned an Extra Life! 💖' : ''}`, 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
       showToast('Failed to claim reward.', 'error');
@@ -1536,8 +1903,12 @@ function ViewVibeApp() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row relative">
-      {/* Toast Notification */}
+    <div className="min-h-screen bg-[#050505] text-white selection:bg-orange-500/30">
+      {activeTab === ('guest' as any) ? (
+        <GuestView showToast={showToast} />
+      ) : (
+        <div className="min-h-screen flex flex-col md:flex-row relative">
+          {/* Toast Notification */}
       <AnimatePresence>
         {toast && (
           <motion.div
@@ -2083,6 +2454,8 @@ function ViewVibeApp() {
           )}
         </AnimatePresence>
       </main>
+        </div>
+      )}
     </div>
   );
 }
