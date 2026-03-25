@@ -8,14 +8,18 @@
         "displayName": { "type": "string", "description": "User's display name from Google Auth" },
         "email": { "type": "string", "description": "User's email address" },
         "wallet": { "type": "number", "description": "Current points balance" },
-        "verifiedWatchTime": { "type": "number", "description": "Total verified watch time in minutes" },
+        "earnedFromVideos": { "type": "number", "description": "Points earned from playing the verification game" },
+        "earnedFromReferrals": { "type": "number", "description": "Points earned from guest views and sign-up invites" },
+        "verifiedWatchTime": { "type": "number", "description": "Total verified watch time in seconds" },
+        "personalWatchTime": { "type": "number", "description": "Watch time from personal views" },
+        "networkWatchTime": { "type": "number", "description": "Watch time from guest views on shared links" },
         "referrals": { "type": "number", "description": "Total number of successful referrals" },
         "claimedVideos": { "type": "array", "items": { "type": "string" }, "description": "List of video IDs for which rewards have been claimed" },
         "activeMissionId": { "type": "string", "description": "ID of the currently active mission, if any" },
         "extraLives": { "type": "number", "description": "Number of extra lives for the Mission Board" },
         "totalCorrect": { "type": "number", "description": "Total number of correct guesses" }
       },
-      "required": ["displayName", "email", "wallet", "verifiedWatchTime", "referrals", "claimedVideos", "extraLives", "totalCorrect"]
+      "required": ["displayName", "email", "wallet", "earnedFromVideos", "earnedFromReferrals", "verifiedWatchTime", "personalWatchTime", "networkWatchTime", "referrals", "claimedVideos", "extraLives", "totalCorrect"]
     },
     "GuestView": {
       "title": "Guest View Record",

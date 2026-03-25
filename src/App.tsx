@@ -33,7 +33,8 @@ import {
   ShoppingBag,
   Activity,
   Share2,
-  Heart
+  Heart,
+  Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings, Video, Redemption, Reward } from './types';
@@ -148,7 +149,11 @@ const INITIAL_USER_DATA: UserData = {
   displayName: 'Guest User',
   email: '',
   wallet: 0,
+  earnedFromVideos: 0,
+  earnedFromReferrals: 0,
   verifiedWatchTime: 0,
+  personalWatchTime: 0,
+  networkWatchTime: 0,
   referrals: 0,
   extraLives: 0,
   totalCorrect: 0,
@@ -722,6 +727,13 @@ const AdminDashboard = ({
   );
 };
 
+const formatWatchTime = (seconds: number) => {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  if (hrs > 0) return `${hrs}h ${mins}m`;
+  return `${mins}m`;
+};
+
 // --- Mission Board ---
 
 const MissionBoard = ({ 
@@ -729,13 +741,15 @@ const MissionBoard = ({
   currentUser, 
   onRewardClaimed,
   recentPayouts,
-  showToast
+  showToast,
+  setActiveTab
 }: { 
   user: UserData, 
   currentUser: FirebaseUser | null,
-  onRewardClaimed: (videoId: string, points: number) => void,
+  onRewardClaimed: (videoId: string, points: number, watchTime: number) => void,
   recentPayouts: Redemption[],
-  showToast: (message: string, type: 'success' | 'error') => void
+  showToast: (message: string, type: 'success' | 'error') => void,
+  setActiveTab: (tab: ActiveTab) => void
 }) => {
   const [videos, setVideos] = useState<Video[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -752,6 +766,13 @@ const MissionBoard = ({
   
   const isProcessingRef = React.useRef(false);
   const timerRef = React.useRef<any>(null);
+
+  const formatWatchTimeLocal = (seconds: number) => {
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    if (hrs > 0) return `${hrs}h ${mins}m`;
+    return `${mins}m`;
+  };
 
   useEffect(() => {
     const vQuery = query(collection(db, 'videos'));
@@ -890,9 +911,9 @@ const MissionBoard = ({
     if (color === selectedVideo.correctColor) {
       setVerificationState('success');
       
-      // 4. Fractional Point Payout
-      const points = Math.floor((watchedSeconds / duration) * 50);
-      onRewardClaimed(selectedVideo.youtubeVideoId, points);
+      // 4. Fixed Point Payout (50 PTS)
+      const points = 50;
+      onRewardClaimed(selectedVideo.youtubeVideoId, points, watchedSeconds);
       
       // Clear active mission on success
       if (currentUser) {
@@ -941,30 +962,92 @@ const MissionBoard = ({
   }
 
   const isUnlocked = duration > 0 && maxWatchedTime >= duration * 0.8;
+  const completedCount = user?.totalCorrect || user?.claimedVideos?.length || 0;
+
+  // Legacy Fallback Logic for Stats
+  const networkPoints = user?.earnedFromReferrals || 0;
+  const personalPoints = user?.earnedFromVideos || (networkPoints === 0 ? user?.wallet || 0 : 0);
+
+  const networkWatchTime = user?.networkWatchTime || 0;
+  const personalWatchTime = user?.personalWatchTime || (networkWatchTime === 0 ? user?.verifiedWatchTime || 0 : 0);
 
   return (
     <div className="space-y-12">
+      {/* Sleek Analytics Stats Dashboard */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Wallet Card - Clickable */}
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          onClick={() => setActiveTab('wallet')}
+          className="bg-[#1A1A1D] border border-white/5 p-6 rounded-2xl flex flex-col justify-center cursor-pointer hover:scale-105 transition-transform group"
+        >
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-orange-500/10 rounded-lg group-hover:bg-orange-500/20 transition-colors">
+              <Wallet size={16} className="text-orange-500" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Wallet Balance</span>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-2xl font-black text-white">
+              {(user?.wallet || 0).toLocaleString()}
+            </h3>
+            <span className="text-[10px] font-black text-orange-500 uppercase tracking-widest">PTS</span>
+          </div>
+          <div className="mt-2 pt-2 border-t border-white/5">
+            <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">
+              From Videos: {personalPoints.toLocaleString()} PTS | From Network: {networkPoints.toLocaleString()} PTS
+            </p>
+          </div>
+        </motion.div>
+
+        {/* Watch Time Card */}
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="bg-[#1A1A1D] border border-white/5 p-6 rounded-2xl flex flex-col justify-center"
+        >
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 bg-emerald-500/10 rounded-lg">
+              <Activity size={16} className="text-emerald-500" />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Verified Watch Time</span>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-2xl font-black text-white">
+              {formatWatchTimeLocal(user?.verifiedWatchTime || 0)}
+            </h3>
+          </div>
+          <div className="mt-2 pt-2 border-t border-white/5">
+            <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">
+              Personal: {formatWatchTimeLocal(personalWatchTime)} | Network: {formatWatchTimeLocal(networkWatchTime)}
+            </p>
+          </div>
+        </motion.div>
+      </div>
+
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
-          <h2 className="text-5xl font-black uppercase tracking-tighter mb-2">Mission Board</h2>
-          <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Complete drops to earn elite rewards</p>
+          <h2 className="text-4xl font-black uppercase tracking-tighter mb-1">Mission Board</h2>
+          <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px]">Complete drops to earn elite rewards</p>
         </div>
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-4 glass-card px-6 py-3 bg-white/5">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 bg-[#1A1A1D] border border-white/5 px-5 py-3 rounded-xl">
             <div className="text-right">
-              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Lifelines</p>
-              <p className="text-xl font-black text-rose-500">{user.extraLives} / 5</p>
+              <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Next Life</p>
+              <p className="text-lg font-black text-rose-500">{(user?.totalCorrect || 0) % 5} / 5 to next life</p>
             </div>
-            <div className="w-px h-8 bg-white/10" />
-            <Heart className={`text-rose-500 ${user.extraLives > 0 ? 'animate-pulse' : ''}`} size={24} fill={user.extraLives > 0 ? "currentColor" : "none"} />
+            <div className="w-px h-6 bg-white/10" />
+            <Heart className={`text-rose-500 ${user.extraLives > 0 ? 'animate-pulse' : ''}`} size={20} fill={user.extraLives > 0 ? "currentColor" : "none"} />
           </div>
-          <div className="flex items-center gap-4 glass-card px-6 py-3 bg-white/5">
+          <div className="flex items-center gap-4 bg-[#1A1A1D] border border-white/5 px-5 py-3 rounded-xl">
             <div className="text-right">
-              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Completed</p>
-              <p className="text-xl font-black text-white">{user.claimedVideos.length} / {videos.length}</p>
+              <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Completed</p>
+              <p className="text-lg font-black text-white">{completedCount} Drops Completed</p>
             </div>
-            <div className="w-px h-8 bg-white/10" />
-            <Trophy className="text-orange-500" size={24} />
+            <div className="w-px h-6 bg-white/10" />
+            <Trophy className="text-orange-500" size={20} />
           </div>
         </div>
       </div>
@@ -1319,7 +1402,9 @@ const GuestView = ({ showToast }: { showToast: (msg: string, type: 'success' | '
           
           if (referrerDoc.exists()) {
             await updateDoc(referrerRef, {
-              wallet: increment(10)
+              wallet: increment(10),
+              earnedFromReferrals: increment(10),
+              networkWatchTime: increment(Math.floor(duration * 0.8)) // Tracked in seconds for consistency
             });
             
             // Add transaction for referrer
@@ -1608,7 +1693,11 @@ function ViewVibeApp() {
               displayName: fbUser.displayName || 'Anonymous',
               email: email,
               wallet: 0,
+              earnedFromVideos: 0,
+              earnedFromReferrals: 0,
               verifiedWatchTime: 0,
+              personalWatchTime: 0,
+              networkWatchTime: 0,
               referrals: 0,
               claimedVideos: [],
               activeMissionId: null,
@@ -1708,6 +1797,7 @@ function ViewVibeApp() {
             if (referrerDoc.exists()) {
               await updateDoc(referrerRef, {
                 wallet: increment(500),
+                earnedFromReferrals: increment(500),
                 referrals: increment(1)
               });
               
@@ -1732,7 +1822,11 @@ function ViewVibeApp() {
           displayName: fbUser.displayName || 'Anonymous',
           email: email,
           wallet: initialWallet,
+          earnedFromVideos: 0,
+          earnedFromReferrals: initialWallet,
           verifiedWatchTime: 0,
+          personalWatchTime: 0,
+          networkWatchTime: 0,
           referrals: 0,
           extraLives: 0,
           totalCorrect: 0,
@@ -1770,7 +1864,7 @@ function ViewVibeApp() {
     }
   };
 
-  const handleRewardClaimed = async (videoId: string, points: number) => {
+  const handleRewardClaimed = async (videoId: string, points: number, watchTime: number) => {
     if (!currentUser || isProcessingRef.current) return;
     
     isProcessingRef.current = true;
@@ -1795,7 +1889,9 @@ function ViewVibeApp() {
 
       await updateDoc(userDocRef, {
         wallet: increment(points),
-        verifiedWatchTime: increment(1),
+        earnedFromVideos: increment(points),
+        verifiedWatchTime: increment(Math.floor(watchTime)),
+        personalWatchTime: increment(Math.floor(watchTime)),
         claimedVideos: arrayUnion(videoId),
         totalCorrect: newTotalCorrect,
         extraLives: extraLivesUpdate
@@ -2023,12 +2119,20 @@ function ViewVibeApp() {
                     </button>
                   </div>
 
-                  <div className="mt-4 relative z-10">
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="text-3xl font-black text-white tracking-tighter neon-glow-orange">
-                        {user.wallet.toLocaleString()}
-                      </span>
-                      <span className="text-[10px] font-black text-orange-500 uppercase tracking-widest">Points</span>
+                  <div className="mt-4 relative z-10 space-y-4">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-3xl font-black text-white tracking-tighter neon-glow-orange">
+                          {user.wallet.toLocaleString()}
+                        </span>
+                        <span className="text-[10px] font-black text-orange-500 uppercase tracking-widest">Points</span>
+                      </div>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-xl font-black text-white tracking-tighter">
+                          {formatWatchTime(user.verifiedWatchTime || 0)}
+                        </span>
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Watch Time</span>
+                      </div>
                     </div>
                     
                     <div className="mt-4 space-y-2">
@@ -2078,6 +2182,7 @@ function ViewVibeApp() {
                 onRewardClaimed={handleRewardClaimed} 
                 recentPayouts={recentPayouts}
                 showToast={showToast}
+                setActiveTab={setActiveTab}
               />
             </motion.div>
           )}

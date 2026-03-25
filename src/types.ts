@@ -2,7 +2,11 @@ export interface UserData {
   displayName: string;
   email: string;
   wallet: number;
+  earnedFromVideos: number;
+  earnedFromReferrals: number;
   verifiedWatchTime: number;
+  personalWatchTime: number;
+  networkWatchTime: number;
   referrals: number;
   extraLives: number;
   totalCorrect: number;

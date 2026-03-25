@@ -11,7 +11,11 @@ service cloud.firestore {
     //   - displayName: string (required)
     //   - email: string (required, email format)
     //   - wallet: number (required, non-negative)
+    //   - earnedFromVideos: number (required, non-negative)
+    //   - earnedFromReferrals: number (required, non-negative)
     //   - verifiedWatchTime: number (required, non-negative)
+    //   - personalWatchTime: number (required, non-negative)
+    //   - networkWatchTime: number (required, non-negative)
     //   - referrals: number (required, non-negative)
     //   - claimedVideos: list (required, strings)
     //   - extraLives: number (required, 0-5)
@@ -49,12 +53,16 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return data.keys().hasAll(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'extraLives', 'totalCorrect']) &&
-             data.keys().hasOnly(['displayName', 'email', 'wallet', 'verifiedWatchTime', 'referrals', 'claimedVideos', 'activeMissionId', 'createdAt', 'extraLives', 'totalCorrect']) &&
+      return data.keys().hasAll(['displayName', 'email', 'wallet', 'earnedFromVideos', 'earnedFromReferrals', 'verifiedWatchTime', 'personalWatchTime', 'networkWatchTime', 'referrals', 'claimedVideos', 'extraLives', 'totalCorrect']) &&
+             data.keys().hasOnly(['displayName', 'email', 'wallet', 'earnedFromVideos', 'earnedFromReferrals', 'verifiedWatchTime', 'personalWatchTime', 'networkWatchTime', 'referrals', 'claimedVideos', 'activeMissionId', 'createdAt', 'extraLives', 'totalCorrect']) &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
              isValidEmail(data.email) &&
              data.wallet is number && data.wallet >= 0 &&
+             data.earnedFromVideos is number && data.earnedFromVideos >= 0 &&
+             data.earnedFromReferrals is number && data.earnedFromReferrals >= 0 &&
              data.verifiedWatchTime is number && data.verifiedWatchTime >= 0 &&
+             data.personalWatchTime is number && data.personalWatchTime >= 0 &&
+             data.networkWatchTime is number && data.networkWatchTime >= 0 &&
              data.referrals is number && data.referrals >= 0 &&
              data.claimedVideos is list &&
              data.extraLives is number && data.extraLives >= 0 && data.extraLives <= 5 &&
