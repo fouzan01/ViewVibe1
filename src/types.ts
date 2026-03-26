@@ -11,6 +11,8 @@ export interface UserData {
   extraLives: number;
   totalCorrect: number;
   claimedVideos: string[];
+  lifetimePoints?: number;
+  coins?: number;
   activeMissionId?: string | null;
   createdAt?: any;
 }
@@ -24,7 +26,7 @@ export interface Transaction {
   createdAt?: any;
 }
 
-export type ActiveTab = 'missionBoard' | 'leaderboard' | 'wallet' | 'referrals' | 'admin';
+export type ActiveTab = 'missionBoard' | 'leaderboard' | 'wallet' | 'referrals' | 'admin' | 'history' | 'settings' | 'guest';
 
 export interface Video {
   id?: string;

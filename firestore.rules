@@ -125,8 +125,13 @@ service cloud.firestore {
       // Users can only create their own profile
       allow create: if isOwner(userId) && isValidUser(request.resource.data);
       // Authenticated users can update profiles (for client-side referral/mission rewards)
-      // WARNING: This is an MVP policy. In production, use Cloud Functions for cross-user updates.
-      allow update: if isAuthenticated() && isValidUser(request.resource.data);
+      // Unauthenticated guests can update profiles ONLY to increment referral rewards
+      allow update: if (isAuthenticated() && isValidUser(request.resource.data)) ||
+                    (request.auth == null && 
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['wallet', 'earnedFromReferrals', 'networkWatchTime']) &&
+                     request.resource.data.wallet == resource.data.wallet + 10 &&
+                     request.resource.data.earnedFromReferrals == resource.data.earnedFromReferrals + 10 &&
+                     isValidUser(request.resource.data));
     }
 
     match /transactions/{transactionId} {
