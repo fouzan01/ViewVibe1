@@ -740,6 +740,47 @@ const AdminDashboard = ({
   );
 };
 
+// --- Helper Functions ---
+
+const isNewDay = (lastTimestamp?: number) => {
+  if (!lastTimestamp) return true;
+  const lastDate = new Date(lastTimestamp);
+  const nowDate = new Date();
+  return (
+    lastDate.getDate() !== nowDate.getDate() ||
+    lastDate.getMonth() !== nowDate.getMonth() ||
+    lastDate.getFullYear() !== nowDate.getFullYear()
+  );
+};
+
+const isNewWeek = (lastTimestamp?: number) => {
+  if (!lastTimestamp) return true;
+  
+  const getMonday = (d: Date) => {
+    const date = new Date(d);
+    const day = date.getDay();
+    const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(date.setDate(diff));
+    monday.setHours(0, 0, 0, 0);
+    return monday;
+  };
+
+  const lastMonday = getMonday(new Date(lastTimestamp));
+  const nowMonday = getMonday(new Date());
+  
+  return lastMonday.getTime() !== nowMonday.getTime();
+};
+
+const isNewMonth = (lastTimestamp?: number) => {
+  if (!lastTimestamp) return true;
+  const lastDate = new Date(lastTimestamp);
+  const nowDate = new Date();
+  return (
+    lastDate.getMonth() !== nowDate.getMonth() ||
+    lastDate.getFullYear() !== nowDate.getFullYear()
+  );
+};
+
 const formatWatchTime = (seconds: number) => {
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
@@ -1483,12 +1524,45 @@ const GuestView = ({ showToast }: { showToast: (msg: string, type: 'success' | '
 
       // THE FIRESTORE PAYLOAD (Syncing the Network Buckets)
       const referrerRef = doc(db, 'users', referrerUid);
-      await updateDoc(referrerRef, {
+      const referrerDoc = await getDoc(referrerRef);
+      const referrerData = referrerDoc.data() as UserData;
+      const lastTs = referrerData?.lastEarnedTimestamp;
+      const watchMins = Math.floor(verifiedTime / 60);
+
+      const updatePayload: any = {
         wallet: increment(10),
         coins: increment(2),
         earnedFromReferrals: increment(10),
-        networkWatchTime: increment(Math.floor(verifiedTime / 60))
-      });
+        networkWatchTime: increment(watchMins),
+        lastEarnedTimestamp: Date.now()
+      };
+
+      // Lazy Reset Logic for Referrer
+      if (isNewDay(lastTs)) {
+        updatePayload.dailyPoints = 10;
+        updatePayload.dailyWatchTime = watchMins;
+      } else {
+        updatePayload.dailyPoints = increment(10);
+        updatePayload.dailyWatchTime = increment(watchMins);
+      }
+
+      if (isNewWeek(lastTs)) {
+        updatePayload.weeklyPoints = 10;
+        updatePayload.weeklyWatchTime = watchMins;
+      } else {
+        updatePayload.weeklyPoints = increment(10);
+        updatePayload.weeklyWatchTime = increment(watchMins);
+      }
+
+      if (isNewMonth(lastTs)) {
+        updatePayload.monthlyPoints = 10;
+        updatePayload.monthlyWatchTime = watchMins;
+      } else {
+        updatePayload.monthlyPoints = increment(10);
+        updatePayload.monthlyWatchTime = increment(watchMins);
+      }
+
+      await updateDoc(referrerRef, updatePayload);
 
       showToast("Success! You just earned 10 Points & 2 Coins for your friend! Sign up to start earning your own cash.", "success");
     } catch (error) {
@@ -1645,6 +1719,7 @@ function ViewVibeApp() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('missionBoard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [leaderboardCategory, setLeaderboardCategory] = useState<'earners' | 'watchers'>('earners');
+  const [timeframe, setTimeframe] = useState<'daily' | 'weekly' | 'monthly' | 'overall'>('overall');
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [isRewardsLoading, setIsRewardsLoading] = useState(true);
   const [recentPayouts, setRecentPayouts] = useState<Redemption[]>([]);
@@ -1747,9 +1822,16 @@ function ViewVibeApp() {
 
       const getSortValue = (u: any) => {
         if (leaderboardCategory === 'earners') {
+          if (timeframe === 'daily') return u.dailyPoints || 0;
+          if (timeframe === 'weekly') return u.weeklyPoints || 0;
+          if (timeframe === 'monthly') return u.monthlyPoints || 0;
           return u.lifetimePoints || u.wallet || 0;
+        } else {
+          if (timeframe === 'daily') return u.dailyWatchTime || 0;
+          if (timeframe === 'weekly') return u.weeklyWatchTime || 0;
+          if (timeframe === 'monthly') return u.monthlyWatchTime || 0;
+          return u.verifiedWatchTime || 0;
         }
-        return u.verifiedWatchTime || 0;
       };
 
       const sorted = allUsers
@@ -1766,7 +1848,7 @@ function ViewVibeApp() {
       console.error("Leaderboard fetch error:", error);
     });
     return () => unsubscribe();
-  }, [leaderboardCategory]);
+  }, [leaderboardCategory, timeframe]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -1781,9 +1863,16 @@ function ViewVibeApp() {
 
       const getSortValue = (u: any) => {
         if (leaderboardCategory === 'earners') {
+          if (timeframe === 'daily') return u.dailyPoints || 0;
+          if (timeframe === 'weekly') return u.weeklyPoints || 0;
+          if (timeframe === 'monthly') return u.monthlyPoints || 0;
           return u.lifetimePoints || u.wallet || 0;
+        } else {
+          if (timeframe === 'daily') return u.dailyWatchTime || 0;
+          if (timeframe === 'weekly') return u.weeklyWatchTime || 0;
+          if (timeframe === 'monthly') return u.monthlyWatchTime || 0;
+          return u.verifiedWatchTime || 0;
         }
-        return u.verifiedWatchTime || 0;
       };
 
       const currentUserValue = getSortValue(user);
@@ -1793,7 +1882,7 @@ function ViewVibeApp() {
       console.error("User rank fetch error:", error);
     });
     return () => unsubscribe();
-  }, [currentUser, user.wallet, user.lifetimePoints, user.verifiedWatchTime, leaderboardCategory]);
+  }, [currentUser, user, leaderboardCategory, timeframe]);
 
   // --- Auth & Firestore Sync ---
   useEffect(() => {
@@ -2015,17 +2104,48 @@ function ViewVibeApp() {
         extraLifeEarned = true;
       }
 
-      await updateDoc(userDocRef, {
+      const lastTs = user.lastEarnedTimestamp;
+      const watchMins = Math.floor(watchTime / 60);
+      
+      const updatePayload: any = {
         wallet: increment(50),
         lifetimePoints: increment(50),
         coins: increment(10), // Award 10 Spendable Coins
         earnedFromVideos: increment(50),
-        verifiedWatchTime: increment(Math.floor(watchTime / 60)), // Tracked in minutes
-        personalWatchTime: increment(Math.floor(watchTime / 60)), // Tracked in minutes
+        verifiedWatchTime: increment(watchMins), // Tracked in minutes
+        personalWatchTime: increment(watchMins), // Tracked in minutes
         claimedVideos: arrayUnion(videoId),
         totalCorrect: newTotalCorrect,
-        extraLives: extraLivesUpdate
-      });
+        extraLives: extraLivesUpdate,
+        lastEarnedTimestamp: Date.now()
+      };
+
+      // Lazy Reset Logic
+      if (isNewDay(lastTs)) {
+        updatePayload.dailyPoints = 50;
+        updatePayload.dailyWatchTime = watchMins;
+      } else {
+        updatePayload.dailyPoints = increment(50);
+        updatePayload.dailyWatchTime = increment(watchMins);
+      }
+
+      if (isNewWeek(lastTs)) {
+        updatePayload.weeklyPoints = 50;
+        updatePayload.weeklyWatchTime = watchMins;
+      } else {
+        updatePayload.weeklyPoints = increment(50);
+        updatePayload.weeklyWatchTime = increment(watchMins);
+      }
+
+      if (isNewMonth(lastTs)) {
+        updatePayload.monthlyPoints = 50;
+        updatePayload.monthlyWatchTime = watchMins;
+      } else {
+        updatePayload.monthlyPoints = increment(50);
+        updatePayload.monthlyWatchTime = increment(watchMins);
+      }
+
+      await updateDoc(userDocRef, updatePayload);
 
       // 2. Add transaction record
       await addDoc(collection(db, 'transactions'), {
@@ -2367,6 +2487,23 @@ function ViewVibeApp() {
                     </button>
                   </div>
                 </div>
+
+                {/* Timeframe Tabs */}
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {['daily', 'weekly', 'monthly', 'overall'].map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTimeframe(t as any)}
+                      className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all border ${
+                        timeframe === t 
+                          ? 'bg-white/10 border-orange-500 text-orange-500 shadow-[0_0_15px_rgba(249,115,22,0.2)]' 
+                          : 'bg-transparent border-white/5 text-slate-500 hover:border-white/20 hover:text-slate-300'
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Hype Engine - Dynamic Motivation */}
@@ -2391,9 +2528,33 @@ function ViewVibeApp() {
                       {userRank === 1 ? "Defend your throne, legend." : 
                        topUsers.length > 0 && userRank ? (
                          userRank <= 10 ? (
-                           `Only ${((topUsers[userRank - 2]?.displayValue || 0) - (leaderboardCategory === 'earners' ? (user.lifetimePoints || user.wallet || 0) : user.verifiedWatchTime)).toLocaleString()} ${leaderboardCategory === 'earners' ? 'pts' : 'mins'} to Rank #${userRank - 1}`
+                           `Only ${((topUsers[userRank - 2]?.displayValue || 0) - (
+                             leaderboardCategory === 'earners' ? (
+                               timeframe === 'daily' ? (user.dailyPoints || 0) :
+                               timeframe === 'weekly' ? (user.weeklyPoints || 0) :
+                               timeframe === 'monthly' ? (user.monthlyPoints || 0) :
+                               (user.lifetimePoints || user.wallet || 0)
+                             ) : (
+                               timeframe === 'daily' ? (user.dailyWatchTime || 0) :
+                               timeframe === 'weekly' ? (user.weeklyWatchTime || 0) :
+                               timeframe === 'monthly' ? (user.monthlyWatchTime || 0) :
+                               (user.verifiedWatchTime || 0)
+                             )
+                           )).toLocaleString()} ${leaderboardCategory === 'earners' ? 'pts' : 'mins'} to Rank #${userRank - 1}`
                          ) : (
-                           `Need ${((topUsers[9]?.displayValue || 0) - (leaderboardCategory === 'earners' ? (user.lifetimePoints || user.wallet || 0) : user.verifiedWatchTime)).toLocaleString()} ${leaderboardCategory === 'earners' ? 'pts' : 'mins'} to enter Top 10`
+                           `Need ${((topUsers[9]?.displayValue || 0) - (
+                             leaderboardCategory === 'earners' ? (
+                               timeframe === 'daily' ? (user.dailyPoints || 0) :
+                               timeframe === 'weekly' ? (user.weeklyPoints || 0) :
+                               timeframe === 'monthly' ? (user.monthlyPoints || 0) :
+                               (user.lifetimePoints || user.wallet || 0)
+                             ) : (
+                               timeframe === 'daily' ? (user.dailyWatchTime || 0) :
+                               timeframe === 'weekly' ? (user.weeklyWatchTime || 0) :
+                               timeframe === 'monthly' ? (user.monthlyWatchTime || 0) :
+                               (user.verifiedWatchTime || 0)
+                             )
+                           )).toLocaleString()} ${leaderboardCategory === 'earners' ? 'pts' : 'mins'} to enter Top 10`
                          )
                        ) : "Loading your destiny..."}
                     </p>
@@ -2456,7 +2617,7 @@ function ViewVibeApp() {
                           {compactFormatter.format(item.displayValue)} {leaderboardCategory === 'earners' ? 'XP' : 'MINS'}
                         </p>
                         <p className="text-[8px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
-                          {leaderboardCategory === 'earners' ? `Wallet: ${compactFormatter.format(item.wallet || 0)}` : 'Watch Time'}
+                          {compactFormatter.format(item.coins || 0)} Coins
                         </p>
                       </div>
                     </motion.div>

@@ -15,6 +15,14 @@ export interface UserData {
   coins?: number;
   activeMissionId?: string | null;
   createdAt?: any;
+  // Timeframe stats
+  dailyPoints?: number;
+  weeklyPoints?: number;
+  monthlyPoints?: number;
+  dailyWatchTime?: number;
+  weeklyWatchTime?: number;
+  monthlyWatchTime?: number;
+  lastEarnedTimestamp?: number;
 }
 
 export interface Transaction {
