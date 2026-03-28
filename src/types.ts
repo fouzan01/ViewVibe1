@@ -1,4 +1,5 @@
 export interface UserData {
+  id?: string;
   displayName: string;
   email: string;
   wallet: number;
@@ -23,6 +24,11 @@ export interface UserData {
   weeklyWatchTime?: number;
   monthlyWatchTime?: number;
   lastEarnedTimestamp?: number;
+  instagram?: string;
+  facebook?: string;
+  state?: string;
+  district?: string;
+  photoURL?: string;
 }
 
 export interface Transaction {
@@ -34,7 +40,7 @@ export interface Transaction {
   createdAt?: any;
 }
 
-export type ActiveTab = 'missionBoard' | 'leaderboard' | 'wallet' | 'referrals' | 'admin' | 'history' | 'settings' | 'guest';
+export type ActiveTab = 'missionBoard' | 'leaderboard' | 'wallet' | 'referrals' | 'admin' | 'history' | 'settings' | 'guest' | 'profile';
 
 export interface Video {
   id?: string;
@@ -42,6 +48,10 @@ export interface Video {
   correctColor: string;
   createdAt: any; // Firestore Timestamp
   isActive: boolean;
+  userPoints?: number;
+  userCoins?: number;
+  guestPoints?: number;
+  guestCoins?: number;
 }
 
 export interface Settings {

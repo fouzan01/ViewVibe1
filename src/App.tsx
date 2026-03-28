@@ -19,6 +19,7 @@ import {
   Copy, 
   ExternalLink,
   ChevronRight,
+  ChevronLeft,
   History,
   Gift,
   Menu,
@@ -36,11 +37,23 @@ import {
   Share2,
   Heart,
   Clock,
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  Search,
+  Filter,
+  UserCheck,
+  UserMinus,
+  Coins,
+  Instagram,
+  Facebook,
+  MapPin,
+  User
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserData, Transaction, ActiveTab, LeaderboardUser, RewardItem, OperationType, FirestoreErrorInfo, Settings, Video, Redemption, Reward } from './types';
+import Leaderboards from './components/Leaderboards';
 import { auth, db, googleProvider } from './firebase';
+import Profile from './components/Profile';
+import OnboardingGate from './components/OnboardingGate';
 import { 
   signInWithPopup, 
   signOut, 
@@ -51,6 +64,7 @@ import {
   doc, 
   setDoc, 
   getDoc, 
+  getDocs,
   updateDoc, 
   onSnapshot, 
   increment,
@@ -172,6 +186,11 @@ const INITIAL_USER_DATA: UserData = {
   claimedVideos: [],
   lifetimePoints: 0,
   activeMissionId: null,
+  instagram: '',
+  facebook: '',
+  state: '',
+  district: '',
+  photoURL: ''
 };
 
 const INITIAL_HISTORY: Transaction[] = [
@@ -214,6 +233,10 @@ const AdminDashboard = ({
   const [color, setColor] = useState('Neon Green');
   const [rewardTitle, setRewardTitle] = useState('');
   const [rewardCost, setRewardCost] = useState('');
+  const [userPoints, setUserPoints] = useState('50');
+  const [userCoins, setUserCoins] = useState('10');
+  const [guestPoints, setGuestPoints] = useState('10');
+  const [guestCoins, setGuestCoins] = useState('2');
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [videos, setVideos] = useState<Video[]>([]);
@@ -222,8 +245,47 @@ const AdminDashboard = ({
   const [isLoading, setIsLoading] = useState(true);
   const [isRedemptionsLoading, setIsRedemptionsLoading] = useState(true);
   const [isRewardsLoading, setIsRewardsLoading] = useState(true);
+  const [users, setUsers] = useState<UserData[]>([]);
+  const [isUsersLoading, setIsUsersLoading] = useState(true);
+  const [userSearch, setUserSearch] = useState('');
+  const [userPage, setUserPage] = useState(1);
+  const usersPerPage = 10;
 
   const isAdmin = currentUser?.email === ADMIN_EMAIL;
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const uQuery = query(collection(db, 'users'));
+    const unsubscribe = onSnapshot(uQuery, (snapshot) => {
+      const uList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as any as UserData))
+        .sort((a, b) => {
+          const timeA = a.createdAt?.toMillis?.() || 0;
+          const timeB = b.createdAt?.toMillis?.() || 0;
+          return timeB - timeA;
+        });
+      setUsers(uList);
+      setIsUsersLoading(false);
+    }, (error) => {
+      console.error("Users fetch error:", error);
+      setIsUsersLoading(false);
+    });
+    return () => unsubscribe();
+  }, [isAdmin]);
+
+  const filteredUsers = useMemo(() => {
+    return users.filter(u => 
+      u.displayName?.toLowerCase().includes(userSearch.toLowerCase()) ||
+      u.email?.toLowerCase().includes(userSearch.toLowerCase())
+    );
+  }, [users, userSearch]);
+
+  const paginatedUsers = useMemo(() => {
+    const start = (userPage - 1) * usersPerPage;
+    return filteredUsers.slice(start, start + usersPerPage);
+  }, [filteredUsers, userPage]);
+
+  const totalPages = Math.ceil(filteredUsers.length / usersPerPage);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -298,7 +360,11 @@ const AdminDashboard = ({
         youtubeVideoId: videoId,
         correctColor: color,
         createdAt: serverTimestamp(),
-        isActive: true
+        isActive: true,
+        userPoints: parseInt(userPoints),
+        userCoins: parseInt(userCoins),
+        guestPoints: parseInt(guestPoints),
+        guestCoins: parseInt(guestCoins)
       });
       setVideoId('');
       setStatus('success');
@@ -371,15 +437,57 @@ const AdminDashboard = ({
     }
   };
 
-  const completeRedemption = async (id: string) => {
-    if (!isAdmin || !id) return;
+  const completeRedemption = async (redemption: Redemption) => {
+    if (!isAdmin || !redemption.id || !redemption.userId) return;
     try {
-      await updateDoc(doc(db, 'redemptions', id), {
+      // Fetch the latest user data to check coins
+      const userDoc = await getDoc(doc(db, 'users', redemption.userId));
+      if (!userDoc.exists()) {
+        console.error("User not found");
+        return;
+      }
+      
+      const userData = userDoc.data() as any as UserData;
+      const currentCoins = userData.coins || 0;
+      
+      if (currentCoins < redemption.cost) {
+        alert("Insufficient Coins: User does not have enough coins to complete this payout.");
+        return;
+      }
+
+      // 1. Deduct coins from user (Strictly coins, NOT wallet)
+      await updateDoc(doc(db, 'users', redemption.userId), {
+        coins: increment(-redemption.cost)
+      });
+
+      // 2. Mark redemption as completed
+      await updateDoc(doc(db, 'redemptions', redemption.id), {
         status: 'Completed',
         completedAt: serverTimestamp()
       });
+      
+      // 3. Add transaction record
+      await addDoc(collection(db, 'transactions'), {
+        userId: redemption.userId,
+        type: 'spend',
+        amount: redemption.cost,
+        note: `Payout Approved: ${redemption.rewardName}`,
+        date: new Date().toISOString().split('T')[0],
+        createdAt: serverTimestamp()
+      });
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `redemptions/${id}`);
+      handleFirestoreError(error, OperationType.UPDATE, `redemptions/${redemption.id}`);
+    }
+  };
+
+  const updateUserCoins = async (userId: string, amount: number) => {
+    if (!isAdmin || !userId) return;
+    try {
+      await updateDoc(doc(db, 'users', userId), {
+        coins: increment(amount)
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
     }
   };
 
@@ -487,6 +595,45 @@ const AdminDashboard = ({
               <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600">
                 <Play size={18} />
               </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">User Points</label>
+              <input 
+                type="number"
+                value={userPoints}
+                onChange={(e) => setUserPoints(e.target.value)}
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-orange-500 transition-colors"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">User Coins</label>
+              <input 
+                type="number"
+                value={userCoins}
+                onChange={(e) => setUserCoins(e.target.value)}
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-orange-500 transition-colors"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Guest Points</label>
+              <input 
+                type="number"
+                value={guestPoints}
+                onChange={(e) => setGuestPoints(e.target.value)}
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-orange-500 transition-colors"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Guest Coins</label>
+              <input 
+                type="number"
+                value={guestCoins}
+                onChange={(e) => setGuestCoins(e.target.value)}
+                className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-orange-500 transition-colors"
+              />
             </div>
           </div>
 
@@ -724,7 +871,7 @@ const AdminDashboard = ({
                   </div>
                   
                   <button
-                    onClick={() => r.id && completeRedemption(r.id)}
+                    onClick={() => r.id && completeRedemption(r)}
                     className="px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-black uppercase tracking-widest text-[10px] rounded-xl transition-all hover:scale-105 shadow-lg shadow-emerald-500/20 flex items-center gap-2"
                   >
                     <CheckCircle2 size={14} />
@@ -733,6 +880,152 @@ const AdminDashboard = ({
                 </div>
               ))}
             </div>
+          )}
+        </div>
+      </div>
+
+      {/* User Management Section */}
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Users className="text-orange-500" />
+            <h3 className="text-2xl font-black uppercase tracking-tight">User Management</h3>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+              <input 
+                type="text"
+                value={userSearch}
+                onChange={(e) => {
+                  setUserSearch(e.target.value);
+                  setUserPage(1);
+                }}
+                placeholder="Search users..."
+                className="bg-black/40 border border-white/10 rounded-xl pl-10 pr-4 py-2 text-xs text-white outline-none focus:border-orange-500 transition-colors w-64"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="glass-card overflow-hidden">
+          {isUsersLoading ? (
+            <div className="flex justify-center py-12">
+              <RefreshCw className="animate-spin text-orange-500" size={32} />
+            </div>
+          ) : filteredUsers.length === 0 ? (
+            <div className="p-12 text-center text-slate-600 font-bold uppercase tracking-widest text-xs">
+              No users found matching your search
+            </div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/5 bg-white/5">
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">User</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">Spendable Coins</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">Stats</th>
+                      <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {paginatedUsers.map((u) => (
+                      <tr key={u.id} className="hover:bg-white/5 transition-colors">
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500 font-black">
+                              {u.displayName?.[0] || 'U'}
+                            </div>
+                            <div>
+                              <p className="font-black text-white text-sm">{u.displayName}</p>
+                              <p className="text-[10px] text-slate-500 font-mono">{u.email}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <Coins size={14} className="text-orange-500" />
+                            <span className="font-black text-white">{(u.coins || 0).toLocaleString()}</span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 uppercase tracking-widest">Points</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                              <Play size={10} />
+                              <span>{u.claimedVideos?.length || 0} Missions</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                              <Users size={10} />
+                              <span>{u.referrals || 0} Referrals</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={() => u.id && updateUserCoins(u.id, 100)}
+                              className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg hover:bg-emerald-500/20 transition-colors"
+                              title="Add 100 Points"
+                            >
+                              <Coins size={16} />
+                            </button>
+                            <button 
+                              onClick={() => u.id && updateUserCoins(u.id, -100)}
+                              className="p-2 bg-rose-500/10 text-rose-500 rounded-lg hover:bg-rose-500/20 transition-colors"
+                              title="Deduct 100 Points"
+                            >
+                              <UserMinus size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="p-4 border-t border-white/5 flex items-center justify-between">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    Showing {((userPage - 1) * usersPerPage) + 1} to {Math.min(userPage * usersPerPage, filteredUsers.length)} of {filteredUsers.length}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => setUserPage(p => Math.max(1, p - 1))}
+                      disabled={userPage === 1}
+                      className="p-2 glass-card hover:bg-white/10 disabled:opacity-50 transition-colors"
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+                    <div className="flex items-center gap-1">
+                      {[...Array(totalPages)].map((_, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setUserPage(i + 1)}
+                          className={`w-8 h-8 rounded-lg text-[10px] font-black transition-all ${
+                            userPage === i + 1 
+                              ? 'bg-orange-500 text-white' 
+                              : 'glass-card hover:bg-white/10 text-slate-500'
+                          }`}
+                        >
+                          {i + 1}
+                        </button>
+                      ))}
+                    </div>
+                    <button 
+                      onClick={() => setUserPage(p => Math.min(totalPages, p + 1))}
+                      disabled={userPage === totalPages}
+                      className="p-2 glass-card hover:bg-white/10 disabled:opacity-50 transition-colors"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -800,7 +1093,7 @@ const MissionBoard = ({
 }: { 
   user: UserData, 
   currentUser: FirebaseUser | null,
-  onRewardClaimed: (videoId: string, points: number, watchTime: number) => void,
+  onRewardClaimed: (videoId: string, points: number, coins: number, watchTime: number) => void,
   recentPayouts: Redemption[],
   showToast: (message: string, type: 'success' | 'error') => void,
   setActiveTab: (tab: ActiveTab) => void
@@ -982,9 +1275,10 @@ const MissionBoard = ({
       if (color === selectedVideo.correctColor) {
         setVerificationState('success');
         
-        // 4. Fixed Point Payout (50 PTS)
-        const points = 50;
-        await onRewardClaimed(selectedVideo.youtubeVideoId, points, watchedSeconds);
+        // 4. Dynamic Reward Payout
+        const earnedPoints = selectedVideo.userPoints || 50;
+        const earnedCoins = selectedVideo.userCoins || 10;
+        await onRewardClaimed(selectedVideo.youtubeVideoId, earnedPoints, earnedCoins, watchedSeconds);
         
         // Clear active mission on success
         if (currentUser) {
@@ -1304,7 +1598,7 @@ const MissionBoard = ({
                   className="mt-8 p-4 w-full glass-card border-emerald-500/30 bg-emerald-500/10 flex items-center justify-center gap-3"
                 >
                   <CheckCircle2 className="text-emerald-500" />
-                  <span className="font-bold text-emerald-400">+{Math.floor((watchedSeconds / duration) * 50)} PTS AWARDED</span>
+                  <span className="font-bold text-emerald-400">+{selectedVideo.userPoints || 50} PTS AWARDED</span>
                 </motion.div>
               )}
 
@@ -1403,11 +1697,11 @@ const MissionBoard = ({
                       </div>
                       <div className="flex flex-col items-end gap-1">
                         <div className="flex items-center gap-1 text-orange-500">
-                          <span className="text-sm font-black">+50</span>
+                          <span className="text-sm font-black">+{v.userPoints || 50}</span>
                           <span className="text-[8px] font-bold uppercase">PTS</span>
                         </div>
                         <div className="flex items-center gap-1 text-yellow-400">
-                          <span className="text-sm font-black">+10</span>
+                          <span className="text-sm font-black">+{v.userCoins || 10}</span>
                           <span className="text-[8px] font-bold uppercase">COINS</span>
                         </div>
                         <button
@@ -1522,49 +1816,59 @@ const GuestView = ({ showToast }: { showToast: (msg: string, type: 'success' | '
         createdAt: serverTimestamp()
       });
 
+      // Fetch dynamic guest rewards from video document
+      const vQuery = query(collection(db, "videos"), where("youtubeVideoId", "==", videoId));
+      const vSnapshot = await getDocs(vQuery);
+      const videoData = !vSnapshot.empty ? (vSnapshot.docs[0].data() as Video) : null;
+      const referralPoints = videoData?.guestPoints || 10;
+      const referralCoins = videoData?.guestCoins || 2;
+
       // THE FIRESTORE PAYLOAD (Syncing the Network Buckets)
-      const referrerRef = doc(db, 'users', referrerUid);
+      const referrerRef = doc(db, "users", referrerUid);
       const referrerDoc = await getDoc(referrerRef);
       const referrerData = referrerDoc.data() as UserData;
       const lastTs = referrerData?.lastEarnedTimestamp;
       const watchMins = Math.floor(verifiedTime / 60);
 
       const updatePayload: any = {
-        wallet: increment(10),
-        coins: increment(2),
-        earnedFromReferrals: increment(10),
+        wallet: increment(referralPoints),
+        coins: increment(referralCoins),
+        earnedFromReferrals: increment(referralPoints),
         networkWatchTime: increment(watchMins),
-        lastEarnedTimestamp: Date.now()
+        lastEarnedTimestamp: Date.now(),
       };
 
       // Lazy Reset Logic for Referrer
       if (isNewDay(lastTs)) {
-        updatePayload.dailyPoints = 10;
+        updatePayload.dailyPoints = referralPoints;
         updatePayload.dailyWatchTime = watchMins;
       } else {
-        updatePayload.dailyPoints = increment(10);
+        updatePayload.dailyPoints = increment(referralPoints);
         updatePayload.dailyWatchTime = increment(watchMins);
       }
 
       if (isNewWeek(lastTs)) {
-        updatePayload.weeklyPoints = 10;
+        updatePayload.weeklyPoints = referralPoints;
         updatePayload.weeklyWatchTime = watchMins;
       } else {
-        updatePayload.weeklyPoints = increment(10);
+        updatePayload.weeklyPoints = increment(referralPoints);
         updatePayload.weeklyWatchTime = increment(watchMins);
       }
 
       if (isNewMonth(lastTs)) {
-        updatePayload.monthlyPoints = 10;
+        updatePayload.monthlyPoints = referralPoints;
         updatePayload.monthlyWatchTime = watchMins;
       } else {
-        updatePayload.monthlyPoints = increment(10);
+        updatePayload.monthlyPoints = increment(referralPoints);
         updatePayload.monthlyWatchTime = increment(watchMins);
       }
 
       await updateDoc(referrerRef, updatePayload);
 
-      showToast("Success! You just earned 10 Points & 2 Coins for your friend! Sign up to start earning your own cash.", "success");
+      showToast(
+        `Success! You just earned ${referralPoints} Points & ${referralCoins} Coins for your friend! Sign up to start earning your own cash.`,
+        "success"
+      );
     } catch (error) {
       console.error("Failed to award points. Database error:", error);
       showToast("Failed to award points. Database error.", "error");
@@ -1698,6 +2002,8 @@ const SidebarLink = ({
   </button>
 );
 
+// --- App Component ---
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -1741,6 +2047,7 @@ function ViewVibeApp() {
     else if (path === '/referrals') setActiveTab('referrals');
     else if (path === '/history') setActiveTab('history');
     else if (path === '/settings') setActiveTab('settings');
+    else if (path === '/profile') setActiveTab('profile');
     else if (path === '/admin') setActiveTab('admin');
     else if (path.startsWith('/guest/')) setActiveTab('guest');
   }, [location, searchParams]);
@@ -1920,6 +2227,11 @@ function ViewVibeApp() {
               activeMissionId: null,
               extraLives: 0,
               totalCorrect: 0,
+              instagram: '',
+              facebook: '',
+              state: '',
+              district: '',
+              photoURL: fbUser.photoURL || '',
               createdAt: serverTimestamp(),
             };
             await setDoc(userDocRef, newUserData);
@@ -2049,6 +2361,11 @@ function ViewVibeApp() {
           totalCorrect: 0,
           claimedVideos: [],
           activeMissionId: null,
+          instagram: '',
+          facebook: '',
+          state: '',
+          district: '',
+          photoURL: fbUser.photoURL || '',
           createdAt: serverTimestamp(),
         };
         await setDoc(userDocRef, newUserData);
@@ -2081,7 +2398,7 @@ function ViewVibeApp() {
     }
   };
 
-  const handleRewardClaimed = async (videoId: string, points: number, watchTime: number) => {
+  const handleRewardClaimed = async (videoId: string, points: number, coins: number, watchTime: number) => {
     if (!currentUser || isProcessingRef.current) return;
     
     isProcessingRef.current = true;
@@ -2108,10 +2425,10 @@ function ViewVibeApp() {
       const watchMins = Math.floor(watchTime / 60);
       
       const updatePayload: any = {
-        wallet: increment(50),
-        lifetimePoints: increment(50),
-        coins: increment(10), // Award 10 Spendable Coins
-        earnedFromVideos: increment(50),
+        wallet: increment(points),
+        lifetimePoints: increment(points),
+        coins: increment(coins), // Award Spendable Coins
+        earnedFromVideos: increment(points),
         verifiedWatchTime: increment(watchMins), // Tracked in minutes
         personalWatchTime: increment(watchMins), // Tracked in minutes
         claimedVideos: arrayUnion(videoId),
@@ -2122,26 +2439,26 @@ function ViewVibeApp() {
 
       // Lazy Reset Logic
       if (isNewDay(lastTs)) {
-        updatePayload.dailyPoints = 50;
+        updatePayload.dailyPoints = points;
         updatePayload.dailyWatchTime = watchMins;
       } else {
-        updatePayload.dailyPoints = increment(50);
+        updatePayload.dailyPoints = increment(points);
         updatePayload.dailyWatchTime = increment(watchMins);
       }
 
       if (isNewWeek(lastTs)) {
-        updatePayload.weeklyPoints = 50;
+        updatePayload.weeklyPoints = points;
         updatePayload.weeklyWatchTime = watchMins;
       } else {
-        updatePayload.weeklyPoints = increment(50);
+        updatePayload.weeklyPoints = increment(points);
         updatePayload.weeklyWatchTime = increment(watchMins);
       }
 
       if (isNewMonth(lastTs)) {
-        updatePayload.monthlyPoints = 50;
+        updatePayload.monthlyPoints = points;
         updatePayload.monthlyWatchTime = watchMins;
       } else {
-        updatePayload.monthlyPoints = increment(50);
+        updatePayload.monthlyPoints = increment(points);
         updatePayload.monthlyWatchTime = increment(watchMins);
       }
 
@@ -2157,7 +2474,7 @@ function ViewVibeApp() {
         createdAt: serverTimestamp()
       });
       
-      showToast(`Correct! +50 Points & +10 Coins added! ${extraLifeEarned ? 'You earned an Extra Life! 💖' : ''}`, 'success');
+      showToast(`Correct! +${points} Points & +${coins} Coins added! ${extraLifeEarned ? 'You earned an Extra Life! 💖' : ''}`, 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${currentUser.uid}`);
       showToast('Failed to claim reward.', 'error');
@@ -2180,12 +2497,7 @@ function ViewVibeApp() {
     try {
       const userDocRef = doc(db, 'users', currentUser.uid);
       
-      // 1. Deduct coins
-      await updateDoc(userDocRef, {
-        coins: increment(-reward.cost)
-      });
-
-      // 2. Create redemption record
+      // 1. Create redemption record (Deduction now happens at admin approval)
       await addDoc(collection(db, 'redemptions'), {
         userId: currentUser.uid,
         userEmail: currentUser.email,
@@ -2254,7 +2566,8 @@ function ViewVibeApp() {
       {activeTab === ('guest' as any) ? (
         <GuestView showToast={showToast} />
       ) : (
-        <div className="min-h-screen flex flex-col md:flex-row relative">
+        <OnboardingGate user={currentUser} userData={user}>
+          <div className="min-h-screen flex flex-col md:flex-row relative">
           {/* Toast Notification */}
       <AnimatePresence>
         {toast && (
@@ -2344,6 +2657,12 @@ function ViewVibeApp() {
                 label="Settings" 
                 active={activeTab === 'settings'} 
                 onClick={() => { navigate('/settings'); setIsMobileMenuOpen(false); }} 
+              />
+              <SidebarLink 
+                icon={User} 
+                label="Profile" 
+                active={activeTab === 'profile'} 
+                onClick={() => { navigate('/profile'); setIsMobileMenuOpen(false); }} 
               />
               {currentUser?.email === ADMIN_EMAIL && (
                 <SidebarLink 
@@ -2563,120 +2882,14 @@ function ViewVibeApp() {
               </div>
 
               {/* Leaderboard List */}
-              <div className="space-y-4">
-                {topUsers.map((item) => {
-                  const isTop3 = item.rank <= 3;
-                  const isCurrentUser = currentUser?.uid === item.id;
-                  const rankColors = [
-                    'border-yellow-500/50 bg-yellow-500/10 shadow-[0_0_30px_rgba(234,179,8,0.15)]',
-                    'border-slate-300/50 bg-slate-300/10 shadow-[0_0_30px_rgba(203,213,225,0.1)]',
-                    'border-amber-700/50 bg-amber-700/10 shadow-[0_0_30px_rgba(180,83,9,0.1)]'
-                  ];
-
-                  const compactFormatter = new Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 });
-
-                  return (
-                    <motion.div
-                      key={item.id}
-                      initial={{ opacity: 0, x: -20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: item.rank * 0.05 }}
-                      className={`glass-card p-4 sm:p-5 flex items-center gap-3 sm:gap-6 group hover:bg-white/10 transition-all duration-300 ${isTop3 ? rankColors[item.rank - 1] : ''} ${isCurrentUser ? 'border-orange-500/50 ring-1 ring-orange-500/20' : ''}`}
-                    >
-                      <div className="w-8 sm:w-12 text-center flex-shrink-0">
-                        {item.rank === 1 ? <Crown className="text-yellow-500 mx-auto" size={28} /> : 
-                         item.rank === 2 ? <Trophy className="text-slate-300 mx-auto" size={24} /> :
-                         item.rank === 3 ? <Trophy className="text-amber-700 mx-auto" size={24} /> :
-                         <span className={`text-lg sm:text-xl font-black ${isTop3 ? 'text-white' : 'text-slate-600'}`}>#{item.rank}</span>}
-                      </div>
-                      
-                      <div className="relative flex-shrink-0">
-                        <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-full border-2 border-white/10 overflow-hidden bg-white/5">
-                          <img 
-                            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${item.displayName}`} 
-                            alt={item.displayName} 
-                            className="w-full h-full object-cover" 
-                            referrerPolicy="no-referrer" 
-                          />
-                        </div>
-                        {item.rank === 1 && <div className="absolute -top-1 -right-1 w-4 h-4 sm:w-5 sm:h-5 bg-yellow-500 rounded-full flex items-center justify-center text-[8px] sm:text-[10px] font-black text-black border-2 border-[#05050a]">1</div>}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-black text-sm sm:text-lg group-hover:text-orange-400 transition-colors truncate">{item.displayName}</h4>
-                          {isCurrentUser && <span className="px-2 py-0.5 bg-orange-500 text-[8px] font-black text-white rounded-full uppercase tracking-tighter flex-shrink-0">You</span>}
-                        </div>
-                        <p className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-widest truncate">
-                          {item.rank === 1 ? 'Undisputed Champion' : item.rank <= 3 ? 'Elite Legend' : 'Rising Star'}
-                        </p>
-                      </div>
-
-                      <div className="text-right flex-shrink-0">
-                        <p className={`text-lg sm:text-2xl font-black leading-none ${item.rank === 1 ? 'text-yellow-500' : 'text-white'}`}>
-                          {compactFormatter.format(item.displayValue)} {leaderboardCategory === 'earners' ? 'XP' : 'MINS'}
-                        </p>
-                        <p className="text-[8px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
-                          {compactFormatter.format(item.coins || 0)} Coins
-                        </p>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-
-                {/* Current User Pinned Rank (if not in top 10) */}
-                {currentUser && userRank && userRank > 10 && (
-                  <>
-                    <div className="py-4 flex items-center justify-center">
-                      <div className="h-px flex-1 bg-gradient-to-r from-transparent to-white/10" />
-                      <div className="px-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">Your Position</div>
-                      <div className="h-px flex-1 bg-gradient-to-l from-transparent to-white/10" />
-                    </div>
-                    
-                    <motion.div
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="glass-card p-4 sm:p-5 flex items-center gap-3 sm:gap-6 border-orange-500/30 bg-orange-500/5 ring-1 ring-orange-500/10"
-                    >
-                      <div className="w-8 sm:w-12 text-center flex-shrink-0">
-                        <span className="text-lg sm:text-xl font-black text-orange-500">#{userRank}</span>
-                      </div>
-                      
-                      <div className="relative flex-shrink-0">
-                        <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-full border-2 border-orange-500/20 overflow-hidden bg-white/5">
-                          <img 
-                            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${user.displayName}`} 
-                            alt={user.displayName} 
-                            className="w-full h-full object-cover" 
-                            referrerPolicy="no-referrer" 
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-black text-sm sm:text-lg text-white truncate">{user.displayName}</h4>
-                          <span className="px-2 py-0.5 bg-orange-500 text-[8px] font-black text-white rounded-full uppercase tracking-tighter flex-shrink-0">You</span>
-                        </div>
-                        <p className="text-[10px] sm:text-xs font-bold text-orange-500/70 uppercase tracking-widest truncate">
-                          Keep climbing to reach the elite!
-                        </p>
-                      </div>
-
-                      <div className="text-right flex-shrink-0">
-                        <p className="text-lg sm:text-2xl font-black text-white leading-none">
-                          {new Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(
-                            leaderboardCategory === 'earners' ? (user.lifetimePoints || user.wallet || 0) : user.verifiedWatchTime
-                          )} {leaderboardCategory === 'earners' ? 'XP' : 'MINS'}
-                        </p>
-                        <p className="text-[8px] sm:text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
-                          {leaderboardCategory === 'earners' ? `Wallet: ${new Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(user.wallet || 0)}` : 'Watch Time'}
-                        </p>
-                      </div>
-                    </motion.div>
-                  </>
-                )}
-              </div>
+              <Leaderboards 
+                topUsers={topUsers}
+                currentUser={currentUser}
+                userRank={userRank}
+                leaderboardCategory={leaderboardCategory}
+                timeframe={timeframe}
+                user={user}
+              />
             </motion.div>
           )}
 
@@ -2882,6 +3095,22 @@ function ViewVibeApp() {
             </motion.div>
           )}
 
+          {activeTab === 'profile' && (
+            <motion.div
+              key="profile"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="max-w-4xl mx-auto"
+            >
+              <Profile 
+                user={user} 
+                currentUser={currentUser} 
+                showToast={showToast} 
+              />
+            </motion.div>
+          )}
+
           {activeTab === 'referrals' && (
             <motion.div
               key="referrals"
@@ -2965,6 +3194,7 @@ function ViewVibeApp() {
         </AnimatePresence>
       </main>
         </div>
+        </OnboardingGate>
       )}
     </div>
   );
