@@ -2029,6 +2029,7 @@ function ViewVibeApp() {
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [isRewardsLoading, setIsRewardsLoading] = useState(true);
   const [recentPayouts, setRecentPayouts] = useState<Redemption[]>([]);
+  const [users, setUsers] = useState<UserData[]>([]);
   const isProcessingRef = React.useRef(false);
 
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -2166,7 +2167,9 @@ function ViewVibeApp() {
       const allUsers = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
-      }));
+      })) as UserData[];
+      
+      setUsers(allUsers);
 
       const getSortValue = (u: any) => {
         if (leaderboardCategory === 'earners') {
@@ -2883,9 +2886,8 @@ function ViewVibeApp() {
 
               {/* Leaderboard List */}
               <Leaderboards 
-                topUsers={topUsers}
+                allUsers={users}
                 currentUser={currentUser}
-                userRank={userRank}
                 leaderboardCategory={leaderboardCategory}
                 timeframe={timeframe}
                 user={user}
