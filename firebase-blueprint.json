@@ -17,9 +17,11 @@
         "claimedVideos": { "type": "array", "items": { "type": "string" }, "description": "List of video IDs for which rewards have been claimed" },
         "activeMissionId": { "type": "string", "description": "ID of the currently active mission, if any" },
         "extraLives": { "type": "number", "description": "Number of extra lives for the Mission Board" },
-        "totalCorrect": { "type": "number", "description": "Total number of correct guesses" }
+        "totalCorrect": { "type": "number", "description": "Total number of correct guesses" },
+        "coins": { "type": "number", "description": "Coins balance for store redemptions" },
+        "redeemedPromos": { "type": "array", "items": { "type": "string" }, "description": "List of promo codes already redeemed by the user" }
       },
-      "required": ["displayName", "email", "wallet", "earnedFromVideos", "earnedFromReferrals", "verifiedWatchTime", "personalWatchTime", "networkWatchTime", "referrals", "claimedVideos", "extraLives", "totalCorrect"]
+      "required": ["displayName", "email", "wallet", "earnedFromVideos", "earnedFromReferrals", "verifiedWatchTime", "personalWatchTime", "networkWatchTime", "referrals", "claimedVideos", "extraLives", "totalCorrect", "redeemedPromos", "coins"]
     },
     "GuestView": {
       "title": "Guest View Record",
@@ -85,6 +87,48 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "Firestore server timestamp" }
       },
       "required": ["userId", "type", "amount", "note", "date", "createdAt"]
+    },
+    "PayoutRequest": {
+      "title": "Payout Request",
+      "description": "Stores user redemption requests for manual processing.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "UID of the user" },
+        "userEmail": { "type": "string", "description": "Email of the user" },
+        "displayName": { "type": "string", "description": "Display name of the user" },
+        "rewardId": { "type": "string", "description": "ID of the reward from catalog" },
+        "rewardTitle": { "type": "string", "description": "Title of the reward" },
+        "cost": { "type": "number", "description": "Coin cost of the reward" },
+        "status": { "type": "string", "enum": ["pending", "completed", "rejected"], "description": "Current status of the request" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Firestore server timestamp" }
+      },
+      "required": ["uid", "userEmail", "displayName", "rewardId", "rewardTitle", "cost", "status", "createdAt"]
+    },
+    "PromoCode": {
+      "title": "Promo Code",
+      "description": "Stores limited-use promo codes for users.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "The uppercase promo code name" },
+        "reward": { "type": "number", "description": "Coins rewarded to the user" },
+        "maxUses": { "type": "number", "description": "Maximum number of times the code can be used" },
+        "currentUses": { "type": "number", "description": "Current number of times the code has been used" },
+        "isActive": { "type": "boolean", "description": "Whether the code is currently active" },
+        "createdAt": { "type": "number", "description": "Timestamp when the code was created" }
+      },
+      "required": ["code", "reward", "maxUses", "currentUses", "isActive", "createdAt"]
+    },
+    "PlatformSettings": {
+      "title": "Global Platform Settings",
+      "description": "Stores dynamic configuration for the platform.",
+      "type": "object",
+      "properties": {
+        "referralBonus": { "type": "number", "description": "Bonus coins given to the referrer" },
+        "dailyLoginBaseReward": { "type": "number", "description": "Base points for daily login" },
+        "minimumWithdrawal": { "type": "number", "description": "Minimum coins required for withdrawal" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["referralBonus"]
     }
   },
   "firestore": {
@@ -96,9 +140,9 @@
       "schema": "Video",
       "description": "Individual video drop documents."
     },
-    "/redemptions/{redemptionId}": {
-      "schema": "Redemption",
-      "description": "Collection of reward redemption requests."
+    "/payoutRequests/{requestId}": {
+      "schema": "PayoutRequest",
+      "description": "Collection of reward redemption requests for manual processing."
     },
     "/rewards/{rewardId}": {
       "schema": "Reward",
@@ -111,6 +155,14 @@
     "/guest_views/{guestViewId}": {
       "schema": "GuestView",
       "description": "Collection of guest view records to prevent abuse."
+    },
+    "/promoCodes/{code}": {
+      "schema": "PromoCode",
+      "description": "Collection of limited-use promo codes."
+    },
+    "/platformSettings/global_config": {
+      "schema": "PlatformSettings",
+      "description": "Global configuration document for the platform."
     }
   }
 }

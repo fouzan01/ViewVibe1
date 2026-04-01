@@ -53,8 +53,8 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return data.keys().hasAll(['displayName', 'email', 'wallet', 'earnedFromVideos', 'earnedFromReferrals', 'verifiedWatchTime', 'personalWatchTime', 'networkWatchTime', 'referrals', 'claimedVideos', 'extraLives', 'totalCorrect']) &&
-             data.keys().hasOnly(['displayName', 'email', 'wallet', 'earnedFromVideos', 'earnedFromReferrals', 'verifiedWatchTime', 'personalWatchTime', 'networkWatchTime', 'referrals', 'claimedVideos', 'activeMissionId', 'createdAt', 'extraLives', 'totalCorrect']) &&
+      return data.keys().hasAll(['displayName', 'email', 'wallet', 'earnedFromVideos', 'earnedFromReferrals', 'verifiedWatchTime', 'personalWatchTime', 'networkWatchTime', 'referrals', 'claimedVideos', 'extraLives', 'totalCorrect', 'redeemedPromos']) &&
+             data.keys().hasOnly(['displayName', 'email', 'wallet', 'earnedFromVideos', 'earnedFromReferrals', 'verifiedWatchTime', 'personalWatchTime', 'networkWatchTime', 'referrals', 'claimedVideos', 'activeMissionId', 'createdAt', 'extraLives', 'totalCorrect', 'redeemedPromos', 'referredBy']) &&
              data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
              isValidEmail(data.email) &&
              data.wallet is number && data.wallet >= 0 &&
@@ -67,7 +67,9 @@ service cloud.firestore {
              data.claimedVideos is list &&
              data.extraLives is number && data.extraLives >= 0 && data.extraLives <= 5 &&
              data.totalCorrect is number && data.totalCorrect >= 0 &&
+             data.redeemedPromos is list &&
              (!('createdAt' in data) || data.createdAt is timestamp) &&
+             (!('referredBy' in data) || data.referredBy == null || data.referredBy is string) &&
              (!('activeMissionId' in data) || data.activeMissionId == null || data.activeMissionId is string);
     }
 
@@ -119,14 +121,51 @@ service cloud.firestore {
              data.createdAt is timestamp;
     }
 
+    function isValidPayoutRequest(data) {
+      return data.keys().hasAll(['uid', 'userEmail', 'displayName', 'rewardId', 'rewardTitle', 'cost', 'status', 'createdAt']) &&
+             data.keys().hasOnly(['uid', 'userEmail', 'displayName', 'rewardId', 'rewardTitle', 'cost', 'status', 'createdAt']) &&
+             data.uid is string &&
+             isValidEmail(data.userEmail) &&
+             data.displayName is string &&
+             data.rewardId is string &&
+             data.rewardTitle is string &&
+             data.cost is number && data.cost >= 0 &&
+             data.status in ['pending', 'completed', 'rejected'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidPromoCode(data) {
+      return data.keys().hasAll(['code', 'reward', 'maxUses', 'currentUses', 'isActive', 'createdAt']) &&
+             data.keys().hasOnly(['code', 'reward', 'maxUses', 'currentUses', 'isActive', 'createdAt']) &&
+             data.code is string && data.code.size() > 0 &&
+             data.reward is number && data.reward >= 0 &&
+             data.maxUses is number && data.maxUses > 0 &&
+             data.currentUses is number && data.currentUses >= 0 &&
+             data.isActive is bool &&
+             data.createdAt is number;
+    }
+
+    function isValidPlatformSettings(data) {
+      return data.keys().hasAll(['referralBonus']) &&
+             data.keys().hasOnly(['referralBonus', 'dailyLoginBaseReward', 'minimumWithdrawal', 'updatedAt']) &&
+             data.referralBonus is number && data.referralBonus >= 0 &&
+             (!('dailyLoginBaseReward' in data) || data.dailyLoginBaseReward is number) &&
+             (!('minimumWithdrawal' in data) || data.minimumWithdrawal is number) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
     match /users/{userId} {
       // Public read for Leaderboard
       allow read: if true;
       // Users can only create their own profile
       allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      // Authenticated users can update profiles (for client-side referral/mission rewards)
-      // Unauthenticated guests can update profiles ONLY to increment referral rewards
-      allow update: if (isAuthenticated() && isValidUser(request.resource.data)) ||
+      // Authenticated users can update their own profile, or Admin can update any
+      // Also allow authenticated users to update referrer's stats (referral bonus)
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data)) ||
+                    (isAdmin()) ||
+                    (isAuthenticated() && 
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['coins', 'referrals', 'earnedFromReferrals']) &&
+                     isValidUser(request.resource.data)) ||
                     (request.auth == null && 
                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['wallet', 'earnedFromReferrals', 'networkWatchTime']) &&
                      request.resource.data.wallet == resource.data.wallet + 10 &&
@@ -173,6 +212,36 @@ service cloud.firestore {
       allow create: if isValidGuestView(request.resource.data);
       // Immutable
       allow update, delete: if false;
+    }
+
+    match /payoutRequests/{requestId} {
+      // Public read for completed requests (Live Activity), otherwise Owner or Admin
+      allow read: if (resource.data.status == 'completed') || (isAuthenticated() && (isAdmin() || resource.data.uid == request.auth.uid));
+      // Authenticated users can create their own payout requests
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid && isValidPayoutRequest(request.resource.data);
+      // Only Admin can update status or delete
+      allow update, delete: if isAdmin();
+    }
+
+    match /promoCodes/{code} {
+      // Authenticated users can read to check validity
+      allow read: if isAuthenticated();
+      // Only Admin can manage, but users can update currentUses during redemption
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentUses']) &&
+        request.resource.data.currentUses == resource.data.currentUses + 1 &&
+        request.resource.data.currentUses <= resource.data.maxUses &&
+        resource.data.isActive == true
+      );
+    }
+
+    match /platformSettings/global_config {
+      // Public read for referral bonus
+      allow read: if true;
+      // Only Admin can manage
+      allow write: if isAdmin() && isValidPlatformSettings(request.resource.data);
     }
   }
 }

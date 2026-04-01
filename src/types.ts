@@ -29,6 +29,8 @@ export interface UserData {
   state?: string;
   district?: string;
   photoURL?: string;
+  redeemedPromos?: string[];
+  referredBy?: string | null;
 }
 
 export interface Transaction {
@@ -91,6 +93,36 @@ export interface Redemption {
   status: 'Pending' | 'Completed';
   createdAt: any; // Firestore Timestamp
   completedAt?: any; // Firestore Timestamp
+}
+
+export interface PayoutRequest {
+  id?: string;
+  uid: string;
+  userEmail: string;
+  displayName: string;
+  rewardId: string;
+  rewardTitle: string;
+  cost: number;
+  status: 'pending' | 'completed' | 'rejected';
+  createdAt: any; // Firestore Timestamp
+  completedAt?: any; // Firestore Timestamp
+}
+
+export interface ReferralConfig {
+  id?: string;
+  referrerCoins: number;
+  referrerPoints: number;
+  refereeCoins: number;
+  refereePoints: number;
+  isActive: boolean;
+  updatedAt?: any;
+}
+
+export interface PlatformSettings {
+  referralBonus: number;
+  dailyLoginBaseReward: number;
+  minimumWithdrawal: number;
+  updatedAt?: any;
 }
 
 export enum OperationType {

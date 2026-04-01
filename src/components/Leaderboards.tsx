@@ -4,6 +4,34 @@ import { Crown, Trophy, MapPin, ChevronDown } from 'lucide-react';
 import { UserData } from '../types';
 import { indiaData } from '../constants/regions';
 
+// --- Time-Check Helpers (Ghost Data Fix) ---
+const isSameDay = (timestamp: any) => {
+  if (!timestamp) return false;
+  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  const now = new Date();
+  return date.toDateString() === now.toDateString();
+};
+
+const isSameWeek = (timestamp: any) => {
+  if (!timestamp) return false;
+  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  const now = new Date();
+  const startOfWeek = (d: Date) => {
+    const tempDate = new Date(d);
+    const day = tempDate.getDay();
+    const diff = tempDate.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(tempDate.setDate(diff)).setHours(0, 0, 0, 0);
+  };
+  return startOfWeek(date) === startOfWeek(now);
+};
+
+const isSameMonth = (timestamp: any) => {
+  if (!timestamp) return false;
+  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  const now = new Date();
+  return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+};
+
 interface LeaderboardItem extends UserData {
   rank: number;
   displayValue: number;
@@ -30,6 +58,24 @@ const Leaderboards: React.FC<LeaderboardsProps> = ({
 
   // --- Filter & Sort Engine ---
   const { topUsers, userRank } = useMemo(() => {
+    // 0. Apply Read-Time Masking (Ghost Data Fix)
+    const maskedUsers = allUsers.map(u => {
+      const lastEarned = u.lastEarnedTimestamp;
+      const isDailyValid = isSameDay(lastEarned);
+      const isWeeklyValid = isSameWeek(lastEarned);
+      const isMonthlyValid = isSameMonth(lastEarned);
+
+      return {
+        ...u,
+        dailyPoints: isDailyValid ? (u.dailyPoints || 0) : 0,
+        weeklyPoints: isWeeklyValid ? (u.weeklyPoints || 0) : 0,
+        monthlyPoints: isMonthlyValid ? (u.monthlyPoints || 0) : 0,
+        dailyWatchTime: isDailyValid ? (u.dailyWatchTime || 0) : 0,
+        weeklyWatchTime: isWeeklyValid ? (u.weeklyWatchTime || 0) : 0,
+        monthlyWatchTime: isMonthlyValid ? (u.monthlyWatchTime || 0) : 0,
+      };
+    });
+
     const getSortValue = (u: any) => {
       if (leaderboardCategory === 'earners') {
         if (timeframe === 'daily') return u.dailyPoints || 0;
@@ -45,7 +91,7 @@ const Leaderboards: React.FC<LeaderboardsProps> = ({
     };
 
     // 1. Apply Regional Filters
-    let filtered = [...allUsers];
+    let filtered = [...maskedUsers];
     if (filterState !== 'All') {
       filtered = filtered.filter(u => u.state === filterState);
     }
